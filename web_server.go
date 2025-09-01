@@ -646,8 +646,8 @@ const indexHTML = `<!DOCTYPE html>
             width: calc(100% - 40px);
         }
         .header {
-            background: white;
-            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
             padding: 25px;
             text-align: center;
             border-bottom: 1px solid #eee;
@@ -760,15 +760,17 @@ const indexHTML = `<!DOCTYPE html>
         }
         .panel { 
             background: #fff; 
-            border-radius: 4px; 
-            padding: 15px; 
-            border: 2px solid #ff5252; /* 红色边框 */
-            box-shadow: none;
+            border-radius: 8px; 
+            padding: 20px; 
+            border: 1px solid #e1e5e9;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             display: flex;
             flex-direction: column;
         }
         .panel:hover {
-            box-shadow: none;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
         }
         .result {
             background: white;
@@ -814,6 +816,7 @@ const indexHTML = `<!DOCTYPE html>
         .service-list {
             flex: 1;
             min-height: 150px;
+            max-height: 300px;
             overflow-y: auto;
             border: 1px solid #e0e0e0;
             border-radius: 3px;
