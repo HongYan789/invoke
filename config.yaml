@@ -1,0 +1,61 @@
+# Dubbo Invoke CLI 配置文件
+
+# 注册中心配置
+registry:
+  # 注册中心地址，支持 nacos、zookeeper、consul 等
+  address: "nacos://127.0.0.1:8848"
+  # 用户名（可选）
+  username: ""
+  # 密码（可选）
+  password: ""
+
+# 应用配置
+application:
+  # 应用名称
+  name: "dubbo-invoke-cli"
+  # 应用版本
+  version: "1.0.0"
+
+# 默认配置
+defaults:
+  # 协议类型
+  protocol: "dubbo"
+  # 超时时间（秒）
+  timeout: 5
+  # 服务版本（可选）
+  service_version: ""
+  # 服务分组（可选）
+  service_group: ""
+  # 重试次数
+  retries: 0
+  # 负载均衡策略
+  loadbalance: "random"
+
+# 常用服务配置（可选）
+services:
+  # 示例服务配置
+  - name: "com.example.UserService"
+    version: "1.0.0"
+    group: "default"
+    methods:
+      - name: "getUserById"
+        params:
+          - type: "java.lang.Long"
+            example: 123
+      - name: "createUser"
+        params:
+          - type: "com.example.User"
+            example: '{"id": 1, "name": "张三", "email": "zhangsan@example.com"}'
+  
+  - name: "com.example.OrderService"
+    version: "1.0.0"
+    group: "default"
+    methods:
+      - name: "getOrderById"
+        params:
+          - type: "java.lang.Long"
+            example: 456
+      - name: "createOrder"
+        params:
+          - type: "com.example.Order"
+            example: '{"id": 1, "userId": 123, "amount": 99.99}'
