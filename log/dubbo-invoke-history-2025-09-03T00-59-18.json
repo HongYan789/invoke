@@ -1,0 +1,66 @@
+[
+  {
+    "id": "1756861091764420000",
+    "serviceName": "com.example.UserService",
+    "methodName": "getUserById",
+    "parameters": [
+      123
+    ],
+    "types": [],
+    "registry": "zookeeper://127.0.0.1:2181",
+    "app": "dubbo-invoke-client",
+    "success": true,
+    "timestamp": "2025-09-03T08:58:11.764421+08:00",
+    "result": "{\"data\":\"模拟返回数据\",\"message\":\"调用成功\",\"method\":\"getUserById\",\"params\":[123],\"service\":\"com.example.UserService\"}",
+    "duration": 101
+  },
+  {
+    "id": "1756861116632183000",
+    "serviceName": "com.jzt.zhcai.user.companyinfo.CompanyInfoDubboApi",
+    "methodName": "getCompanyInfoByCompanyIdsAndDanwBh",
+    "parameters": [
+      123
+    ],
+    "types": [],
+    "registry": "dubbo://10.7.8.50:16002",
+    "app": "dubbo-invoke-client",
+    "success": false,
+    "timestamp": "2025-09-03T08:58:36.632185+08:00",
+    "result": "真实调用失败: 调用超时: com.jzt.zhcai.user.companyinfo.CompanyInfoDubboApi.getCompanyInfoByCompanyIdsAndDanwBh 在规定时间内未返回响应",
+    "duration": 355
+  },
+  {
+    "id": "1756861124411601000",
+    "serviceName": "com.jzt.zhcai.user.companyinfo.CompanyInfoDubboApi",
+    "methodName": "getCompanyInfoByCompanyIdsAndDanwBh",
+    "parameters": [
+      [],
+      [],
+      1
+    ],
+    "types": [],
+    "registry": "dubbo://10.7.8.50:16002",
+    "app": "dubbo-invoke-client",
+    "success": true,
+    "timestamp": "2025-09-03T08:58:44.411604+08:00",
+    "result": "\"{\\\"cantonCode\\\":\\\"11011300\\\",\\\"cantonName\\\":\\\"顺义区\\\",\\\"cityCode\\\":\\\"1101\\\",\\\"cityName\\\":\\\"北京市\\\",\\\"companyId\\\":1690975589595283458,\\\"companyMan\\\":\\\"张雁\\\",\\\"companyManMobile\\\":\\\"13971687221\\\",\\\"companyName\\\":\\\"北京禧来康医院管理有限公司百德馨康诊所002分室\\\",\\\"companyType\\\":\\\"6\\\",\\\"companyTypeName\\\":\\\"非营利性医疗机构\\\",\\\"danwBh\\\":\\\"E110113281X00005\\\",\\\"danwNm\\\":\\\"DWI36489705\\\",\\\"ouId\\\":\\\"100171\\\",\\\"ouName\\\":\\\"湖北九州通\\\",\\\"provinceCode\\\":\\\"11\\\",\\\"provinceName\\\":\\\"北京市\\\",\\\"subCompanyType\\\":\\\"42\\\",\\\"subCompanyTypeName\\\":\\\"民营社区服务中心(站)\\\",\\\"usageId\\\":\\\"1\\\",\\\"usageName\\\":\\\"购销\\\"}\"",
+    "duration": 180
+  },
+  {
+    "id": "1756861156584461000",
+    "serviceName": "com.jzt.zhcai.user.companyinfo.CompanyInfoDubboApi",
+    "methodName": "getCompanyInfoByCompanyIdsAndDanwBh",
+    "parameters": [
+      [],
+      [],
+      1
+    ],
+    "types": [],
+    "registry": "dubbo://10.7.8.50:16002",
+    "app": "dubbo-invoke-client",
+    "success": true,
+    "timestamp": "2025-09-03T08:59:16.584465+08:00",
+    "result": "\"{\\\"cantonCode\\\":\\\"11011300\\\",\\\"cantonName\\\":\\\"顺义区\\\",\\\"cityCode\\\":\\\"1101\\\",\\\"cityName\\\":\\\"北京市\\\",\\\"companyId\\\":1690975589595283458,\\\"companyMan\\\":\\\"张雁\\\",\\\"companyManMobile\\\":\\\"13971687221\\\",\\\"companyName\\\":\\\"北京禧来康医院管理有限公司百德馨康诊所002分室\\\",\\\"companyType\\\":\\\"6\\\",\\\"companyTypeName\\\":\\\"非营利性医疗机构\\\",\\\"danwBh\\\":\\\"E110113281X00005\\\",\\\"danwNm\\\":\\\"DWI36489705\\\",\\\"ouId\\\":\\\"100171\\\",\\\"ouName\\\":\\\"湖北九州通\\\",\\\"provinceCode\\\":\\\"11\\\",\\\"provinceName\\\":\\\"北京市\\\",\\\"subCompanyType\\\":\\\"42\\\",\\\"subCompanyTypeName\\\":\\\"民营社区服务中心(站)\\\",\\\"usageId\\\":\\\"1\\\",\\\"usageName\\\":\\\"购销\\\"}\"",
+    "duration": 82
+  }
+]

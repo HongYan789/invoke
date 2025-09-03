@@ -21,7 +21,8 @@ func main() {
 - 连接多种注册中心（Zookeeper、Nacos等）
 - 泛化调用任意Dubbo服务
 - 智能参数解析和示例生成
-- 灵活的配置管理`,
+- 灵活的配置管理
+- List类型返回结果自动处理`,
 			Version: fmt.Sprintf("%s (built at %s)", version, buildTime),
 		}
 

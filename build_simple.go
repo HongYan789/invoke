@@ -78,7 +78,6 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("用法: go run build_simple.go <command>")
 		fmt.Println("命令:")
-		fmt.Println("  test    - 运行测试")
 		fmt.Println("  invoke  - 调用服务")
 		fmt.Println("  list    - 列出服务")
 		return
@@ -97,37 +96,6 @@ func main() {
 	client := NewSimpleClient(config)
 	
 	switch command {
-	case "test":
-		fmt.Println("=== Dubbo Invoke CLI 测试 ===")
-		
-		// 连接测试
-		err := client.Connect()
-		if err != nil {
-			fmt.Printf("连接失败: %v\n", err)
-			return
-		}
-		
-		// 列出服务
-		fmt.Println("\n可用服务:")
-		services := client.ListServices()
-		for i, service := range services {
-			fmt.Printf("  %d. %s\n", i+1, service)
-		}
-		
-		// 调用服务
-		fmt.Println("\n调用测试:")
-		result, err := client.Invoke("com.example.UserService", "getUserById", []interface{}{123})
-		if err != nil {
-			fmt.Printf("调用失败: %v\n", err)
-		} else {
-			fmt.Printf("调用结果: %v\n", result)
-		}
-		
-		// 关闭连接
-		client.Close()
-		
-		fmt.Println("\n测试完成!")
-		
 	case "invoke":
 		if len(os.Args) < 4 {
 			fmt.Println("用法: go run build_simple.go invoke <service> <method> [params...]")

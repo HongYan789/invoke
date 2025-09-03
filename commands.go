@@ -111,9 +111,13 @@ func runInvokeCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("调用失败: %v", err)
 	}
 
+	// 使用List结果处理器处理返回结果，传递参数信息
+	listHandler := NewListResultHandler()
+	processedResult := listHandler.HandleListResult(result, methodName, parsedParams)
+
 	// 输出结果
 	color.Green("调用成功:")
-	resultJson, _ := json.MarshalIndent(result, "", "  ")
+	resultJson, _ := json.MarshalIndent(processedResult, "", "  ")
 	fmt.Println(string(resultJson))
 
 	return nil

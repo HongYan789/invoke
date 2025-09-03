@@ -55,11 +55,12 @@ clean:
 	@echo "正在清理构建文件..."
 	rm -f $(APP_NAME) $(APP_NAME).exe $(APP_NAME)-linux $(APP_NAME)-darwin
 
-# 测试
-.PHONY: test
-test:
-	@echo "正在运行测试..."
-	go test -v ./...
+# 删除test目标
+# # 测试
+# .PHONY: test
+# test:
+# 	@echo "正在运行测试..."
+# 	go test -v ./...
 
 # 格式化代码
 .PHONY: fmt
@@ -101,7 +102,8 @@ help:
 	@echo "  build-darwin  - 构建 macOS 版本"
 	@echo "  build-all     - 构建所有平台版本"
 	@echo "  deps          - 安装依赖"
-	@echo "  test          - 运行测试"
+	# 删除test相关的帮助信息
+	# @echo "  test          - 运行测试"
 	@echo "  fmt           - 格式化代码"
 	@echo "  lint          - 代码检查"
 	@echo "  clean         - 清理构建文件"

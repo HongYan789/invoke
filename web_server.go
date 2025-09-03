@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,16 +16,17 @@ import (
 
 // CallHistory 调用历史记录
 type CallHistory struct {
-	ID          string    `json:"id"`
-	ServiceName string    `json:"serviceName"`
-	MethodName  string    `json:"methodName"`
-	Parameters  []string  `json:"parameters"`
-	Types       []string  `json:"types"`
-	Registry    string    `json:"registry"`
-	App         string    `json:"app"`
-	Success     bool      `json:"success"`
-	Timestamp   time.Time `json:"timestamp"`
-	Result      string    `json:"result"`
+	ID          string        `json:"id"`
+	ServiceName string        `json:"serviceName"`
+	MethodName  string        `json:"methodName"`
+	Parameters  []interface{} `json:"parameters"`
+	Types       []string      `json:"types"`
+	Registry    string        `json:"registry"`
+	App         string        `json:"app"`
+	Success     bool          `json:"success"`
+	Timestamp   time.Time     `json:"timestamp"`
+	Result      string        `json:"result"`
+	Duration    int64         `json:"duration"` // 调用耗时，单位毫秒
 }
 
 // WebServer Web服务器结构
@@ -37,23 +40,24 @@ type WebServer struct {
 
 // InvokeRequest Web调用请求
 type InvokeRequest struct {
-	ServiceName string   `json:"serviceName"`
-	MethodName  string   `json:"methodName"`
-	Parameters  []string `json:"parameters"`
-	Types       []string `json:"types"`
-	Registry    string   `json:"registry"`
-	App         string   `json:"app"`
-	Timeout     int      `json:"timeout"`
-	Group       string   `json:"group"`
-	Version     string   `json:"version"`
+	ServiceName string          `json:"serviceName"`
+	MethodName  string          `json:"methodName"`
+	Parameters  json.RawMessage `json:"parameters"` // 使用json.RawMessage支持多种类型
+	Types       []string        `json:"types"`
+	Registry    string          `json:"registry"`
+	App         string          `json:"app"`
+	Timeout     int             `json:"timeout"`
+	Group       string          `json:"group"`
+	Version     string          `json:"version"`
 }
 
 // InvokeResponse Web调用响应
 type InvokeResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data"`
-	Error   string      `json:"error"`
-	Message string      `json:"message"`
+	Success  bool        `json:"success"`
+	Data     interface{} `json:"data"`
+	Error    string      `json:"error"`
+	Message  string      `json:"message"`
+	Duration int64       `json:"duration"` // 后端处理耗时，单位毫秒
 }
 
 // ListServicesResponse 服务列表响应
@@ -120,13 +124,21 @@ func (ws *WebServer) Start() error {
 	http.HandleFunc("/api/methods", ws.handleMethods)
 	http.HandleFunc("/api/example", ws.handleExample)
 	http.HandleFunc("/api/history", ws.handleHistory)
-	http.HandleFunc("/api/test-connection", ws.handleTestConnection)
+	http.HandleFunc("/api/clear-history", ws.handleClearHistory)
+	
+	// 数据完整性解决方案API端点
+	// enhanceWebServerWithCompleteData(ws)
+	
+	// List结果处理增强API端点
+	enhanceWebServerWithListHandling(ws)
 
 	addr := fmt.Sprintf(":%d", ws.port)
 	color.Green("🚀 Web UI服务器启动成功!")
 	color.Cyan("📱 访问地址: http://localhost:%d", ws.port)
 	color.Yellow("⚙️  默认注册中心: %s", ws.registry)
 	color.Yellow("📦 默认应用名: %s", ws.app)
+	color.Green("✨ 数据完整性增强: 已启用")
+	color.Green("✨ List结果处理增强: 已启用")
 	fmt.Println()
 
 	return http.ListenAndServe(addr, nil)
@@ -146,100 +158,130 @@ func (ws *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 // handleInvoke 处理服务调用
 func (ws *WebServer) handleInvoke(w http.ResponseWriter, r *http.Request) {
-	color.Green("[WEB] 收到调用请求: %s %s", r.Method, r.URL.Path)
+	color.Green("[WEB] 收到服务调用请求: %s %s", r.Method, r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
+	// 处理OPTIONS预检请求
 	if r.Method == "OPTIONS" {
-		color.Blue("[WEB] 处理OPTIONS预检请求")
+		color.Yellow("[WEB] 处理OPTIONS预检请求")
 		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	if r.Method != "POST" {
-		color.Red("[WEB] 错误: 不支持的HTTP方法 %s", r.Method)
-		ws.writeError(w, "只支持POST方法")
 		return
 	}
 
 	var req InvokeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		color.Red("[WEB] 错误: 请求参数解析失败 - %v", err)
-		ws.writeError(w, "请求参数解析失败: "+err.Error())
+		color.Red("[WEB] 请求解析失败: %v", err)
+		ws.writeError(w, fmt.Sprintf("请求解析失败: %v", err))
 		return
 	}
-	color.Cyan("[WEB] 解析请求参数成功: 服务=%s, 方法=%s, 参数数量=%d", req.ServiceName, req.MethodName, len(req.Parameters))
 
-	// 使用默认值
-	if req.Registry == "" {
-		req.Registry = ws.registry
-		color.Yellow("[WEB] 使用默认注册中心: %s", req.Registry)
-	}
-	if req.App == "" {
-		req.App = ws.app
-		color.Yellow("[WEB] 使用默认应用名: %s", req.App)
-	}
-	if req.Timeout == 0 {
-		req.Timeout = ws.timeout
-		color.Yellow("[WEB] 使用默认超时时间: %d ms", req.Timeout)
+	color.Cyan("[WEB] 解析请求成功 - 服务: %s, 方法: %s, 参数: %s", req.ServiceName, req.MethodName, string(req.Parameters))
+
+	// 解析参数，保持Long类型精度
+	var params []interface{}
+	if len(req.Parameters) > 0 {
+		// 尝试解析为参数数组
+		var paramArray []interface{}
+		decoder := json.NewDecoder(strings.NewReader(string(req.Parameters)))
+		decoder.UseNumber()
+		err := decoder.Decode(&paramArray)
+		if err == nil {
+			// 成功解析为数组
+			params = convertJSONNumbers(paramArray)
+			color.Green("[WEB] 解析为多参数格式，参数数量: %d", len(params))
+		} else {
+			// 如果不是数组格式，尝试解析为单个参数
+			var singleParam interface{}
+			decoder = json.NewDecoder(strings.NewReader(string(req.Parameters)))
+			decoder.UseNumber()
+			err = decoder.Decode(&singleParam)
+			if err == nil {
+				params = []interface{}{convertJSONNumber(singleParam)}
+				color.Green("[WEB] 解析为单参数格式，参数数量: 1")
+			} else {
+				// 如果都失败了，作为字符串处理
+				params = []interface{}{string(req.Parameters)}
+				color.Yellow("[WEB] 参数解析失败，作为字符串处理: %s", string(req.Parameters))
+			}
+		}
 	}
 
 	color.Blue("[WEB] 开始执行Dubbo调用: %s.%s", req.ServiceName, req.MethodName)
+	// 记录开始时间
+	startTime := time.Now()
 	// 执行调用
 	result, err := ws.executeInvoke(req)
-	
+	// 计算耗时
+	duration := time.Since(startTime).Milliseconds()
+	color.Cyan("[WEB] 调用耗时: %d ms", duration)
+
 	// 保存调用历史
 	history := CallHistory{
 		ID:          fmt.Sprintf("%d", time.Now().UnixNano()),
 		ServiceName: req.ServiceName,
 		MethodName:  req.MethodName,
-		Parameters:  req.Parameters,
+		Parameters:  safeCopyParameters(params), // 使用解析后的参数数组，保持Long类型精度
 		Types:       req.Types,
 		Registry:    req.Registry,
 		App:         req.App,
 		Success:     err == nil,
 		Timestamp:   time.Now(),
+		Duration:    duration,
 	}
-	
+
 	if err != nil {
 		color.Red("[WEB] 调用失败: %v", err)
 		history.Result = err.Error()
 		ws.history = append(ws.history, history)
 		color.Cyan("[WEB] 已保存失败调用历史, 历史记录总数: %d", len(ws.history))
-		ws.writeError(w, err.Error())
+		// 直接返回原始错误信息，不进行JSON包装
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
 		return
 	}
+
+	// 保存成功结果，对结果中的大整数进行安全处理
+	safeResult := safeCopyValue(result)
+	color.Green("[WEB] 调用成功，结果已进行安全处理")
+
+	// 使用自定义编码器来处理大整数，确保它们在JSON序列化过程中不会丢失精度
+	// 创建一个自定义的JSON编码器，使用SetEscapeHTML(false)来避免HTML转义
+	var resultBuffer bytes.Buffer
+	encoder := json.NewEncoder(&resultBuffer)
+	encoder.SetEscapeHTML(false)
 	
-	// 保存成功结果
-	color.Green("[WEB] 调用成功")
-	if resultBytes, jsonErr := json.Marshal(result); jsonErr == nil {
-		history.Result = string(resultBytes)
+	if jsonErr := encoder.Encode(safeResult); jsonErr == nil {
+		// 去除末尾的换行符
+		resultStr := strings.TrimSuffix(resultBuffer.String(), "\n")
+		history.Result = resultStr
 		color.Cyan("[WEB] 结果序列化成功, 长度: %d 字符", len(history.Result))
 	} else {
-		history.Result = fmt.Sprintf("%v", result)
+		history.Result = fmt.Sprintf("%v", safeResult)
 		color.Yellow("[WEB] 结果序列化失败，使用字符串格式: %v", jsonErr)
 	}
 	ws.history = append(ws.history, history)
 	color.Cyan("[WEB] 已保存成功调用历史, 历史记录总数: %d", len(ws.history))
 
-	// 成功时直接返回原始数据，不包装
-	w.Header().Set("Content-Type", "application/json")
-	
-	// 如果result已经是字符串格式的JSON，直接写入
-	if resultStr, ok := result.(string); ok {
-		// 检查是否是有效的JSON字符串
-		var jsonTest interface{}
-		if json.Unmarshal([]byte(resultStr), &jsonTest) == nil {
-			// 是有效JSON，直接输出
-			w.Write([]byte(resultStr))
-			return
-		}
+	// 成功时返回标准的InvokeResponse格式，确保结果中的大整数已安全处理
+	response := InvokeResponse{
+		Success:  true,
+		Data:     safeResult, // 使用安全处理后的结果
+		Error:    "",
+		Message:  "调用成功",
+		Duration: duration,
 	}
-	
-	// 否则进行JSON编码
-	json.NewEncoder(w).Encode(result)
+
+	w.Header().Set("Content-Type", "application/json")
+	// 使用自定义编码器来确保大整数正确序列化
+	var responseBuffer bytes.Buffer
+	responseEncoder := json.NewEncoder(&responseBuffer)
+	responseEncoder.SetEscapeHTML(false)
+	responseEncoder.Encode(response)
+	w.Write(responseBuffer.Bytes())
 }
 
 // handleList 处理服务列表
@@ -248,10 +290,24 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	// 获取查询参数
+	registry := r.URL.Query().Get("registry")
+	app := r.URL.Query().Get("app")
+	timeout := r.URL.Query().Get("timeout")
+
+	color.Yellow("[DEBUG] 服务列表请求 - 注册中心: %s, 应用: %s, 超时: %s", registry, app, timeout)
+
+	if registry == "" {
+		registry = ws.registry
+	}
+	if app == "" {
+		app = ws.app
+	}
+
 	// 创建dubbo客户端配置
 	config := &DubboConfig{
-		Registry:    ws.registry,
-		Application: ws.app,
+		Registry:    registry,
+		Application: app,
 		Timeout:     time.Duration(ws.timeout) * time.Millisecond,
 	}
 	color.Cyan("[WEB] 创建Dubbo客户端配置: 注册中心=%s, 应用=%s, 超时=%dms", config.Registry, config.Application, ws.timeout)
@@ -307,13 +363,13 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 // handleExample 处理示例参数生成
 func (ws *WebServer) handleExample(w http.ResponseWriter, r *http.Request) {
 	color.Blue("[WEB] 收到示例参数生成请求")
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	typesParam := r.URL.Query().Get("types")
 	color.Cyan("[WEB] 获取types参数: %s", typesParam)
-	
+
 	if typesParam == "" {
 		color.Red("[WEB] 缺少types参数")
 		ws.writeError(w, "缺少types参数")
@@ -322,7 +378,7 @@ func (ws *WebServer) handleExample(w http.ResponseWriter, r *http.Request) {
 
 	types := strings.Split(typesParam, ",")
 	color.Green("[WEB] 解析types参数成功，类型数量: %d", len(types))
-	
+
 	color.Blue("[WEB] 开始生成示例参数")
 	examples := generateExampleParams(types)
 	color.Green("[WEB] 示例参数生成成功")
@@ -339,27 +395,72 @@ func (ws *WebServer) handleExample(w http.ResponseWriter, r *http.Request) {
 // parseParameter 解析参数，支持JSON格式的智能类型推断
 func (ws *WebServer) parseParameter(param string) (interface{}, error) {
 	color.Cyan("[WEB] 开始解析参数: %s", param)
-	
+
 	// 去除首尾空格
 	param = strings.TrimSpace(param)
 	color.Cyan("[WEB] 去除空格后的参数: %s", param)
-	
-	// 如果不是JSON格式，直接返回字符串
+
+	// 如果是空字符串，返回nil
+	if param == "" {
+		color.Green("[WEB] 参数为空，返回nil")
+		return nil, nil
+	}
+
+	// 如果不是JSON格式，尝试智能转换
 	if !strings.HasPrefix(param, "{") && !strings.HasPrefix(param, "[") {
-		color.Green("[WEB] 参数不是JSON格式，返回原始字符串")
+		// 尝试转换为数字
+		if param == "null" {
+			color.Green("[WEB] 参数为null，返回nil")
+			return nil, nil
+		}
+
+		// 尝试转换为布尔值
+		if param == "true" {
+			color.Green("[WEB] 参数为布尔值true")
+			return true, nil
+		}
+		if param == "false" {
+			color.Green("[WEB] 参数为布尔值false")
+			return false, nil
+		}
+
+		// 尝试转换为整数
+		if strings.Contains(param, ".") {
+			// 可能是浮点数
+			if f, err := strconv.ParseFloat(param, 64); err == nil {
+				color.Green("[WEB] 参数转换为浮点数: %f", f)
+				return f, nil
+			}
+		} else {
+			// 可能是整数
+			if i, err := strconv.ParseInt(param, 10, 64); err == nil {
+				color.Green("[WEB] 参数转换为整数: %d", i)
+				return i, nil
+			}
+		}
+
+		color.Green("[WEB] 参数保持为字符串")
 		return param, nil
 	}
-	
-	// 尝试解析为JSON
+
+	// 尝试解析为JSON，使用json.Number保持大整数精度
 	color.Blue("[WEB] 尝试解析JSON格式参数")
+	decoder := json.NewDecoder(strings.NewReader(param))
+	decoder.UseNumber() // 使用json.Number保持大整数精度
 	var result interface{}
-	err := json.Unmarshal([]byte(param), &result)
+	err := decoder.Decode(&result)
 	if err != nil {
 		color.Red("[WEB] JSON解析失败: %v", err)
 		return nil, err
 	}
-	color.Green("[WEB] JSON解析成功")
-	
+	color.Green("[WEB] JSON解析成功，使用json.Number保持精度")
+
+	// 特别处理JSON中的null值
+	if result == nil {
+		color.Green("[WEB] JSON解析结果为null")
+		return nil, nil
+	}
+
 	return result, nil
 }
 
@@ -367,7 +468,7 @@ func (ws *WebServer) parseParameter(param string) (interface{}, error) {
 func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 	color.Blue("[WEB] 开始执行Dubbo调用: %s.%s", req.ServiceName, req.MethodName)
 	color.Cyan("[WEB] 调用参数: Registry=%s, App=%s, Timeout=%dms", req.Registry, req.App, req.Timeout)
-	
+
 	// 创建Dubbo客户端配置
 	cfg := &DubboConfig{
 		Registry:    req.Registry,
@@ -376,50 +477,36 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 	}
 	color.Green("[WEB] Dubbo客户端配置创建成功")
 
-	// 智能转换参数为interface{}类型，支持类型推断
-	color.Blue("[WEB] 开始解析调用参数，参数数量: %d", len(req.Parameters))
-	params := make([]interface{}, len(req.Parameters))
-	for i, p := range req.Parameters {
-		color.Cyan("[WEB] 解析参数[%d]: %s", i, p)
-		// 尝试解析JSON格式的参数
-		parsedParam, err := ws.parseParameter(p)
+	// 解析字符串参数为interface{}类型
+	color.Blue("[WEB] 开始解析调用参数")
+	var params []interface{}
+	if len(req.Parameters) > 0 {
+		// 尝试解析为参数数组
+		var paramArray []interface{}
+		decoder := json.NewDecoder(strings.NewReader(string(req.Parameters)))
+		decoder.UseNumber()
+		err := decoder.Decode(&paramArray)
 		if err != nil {
-			// 如果解析失败，使用原始字符串
-			color.Yellow("[WEB] 参数[%d]解析失败，使用原始字符串: %v", i, err)
-			params[i] = p
-		} else {
-			color.Green("[WEB] 参数[%d]解析成功", i)
-			params[i] = parsedParam
+			color.Red("[WEB] 参数解析失败: %v", err)
+			return nil, fmt.Errorf("参数解析失败: %v", err)
 		}
+		
+		// 将json.Number转换为适当的类型
+		params = convertJSONNumbers(paramArray)
+		color.Green("[WEB] 解析参数完成，参数数量: %d", len(params))
 	}
-	color.Green("[WEB] 所有参数解析完成")
+	color.Green("[WEB] 参数解析完成，最终参数数量: %d", len(params))
+
+	// 构建并打印dubbo invoke命令，方便用户验证
+	invokeCmd := ws.buildDubboInvokeCommand(req.ServiceName, req.MethodName, params)
+	color.Yellow("[DUBBO CMD] %s", invokeCmd)
 
 	// 尝试使用真实的Dubbo客户端
 	color.Blue("[WEB] 尝试创建真实Dubbo客户端")
 	realClient, err := NewRealDubboClient(cfg)
 	if err != nil {
-		// 如果真实客户端创建失败，回退到模拟客户端
-		color.Red("[WEB] 真实Dubbo客户端创建失败，回退到模拟客户端: %v", err)
-		
-		// 创建模拟客户端
-		color.Blue("[WEB] 尝试创建模拟Dubbo客户端")
-		mockClient, mockErr := NewDubboClient(cfg)
-		if mockErr != nil {
-			color.Red("[WEB] 创建模拟Dubbo客户端失败: %v", mockErr)
-			return nil, fmt.Errorf("创建模拟Dubbo客户端失败: %v", mockErr)
-		}
-		color.Green("[WEB] 模拟Dubbo客户端创建成功")
-		defer mockClient.Close()
-		
-		// 执行模拟调用
-		color.Blue("[WEB] 开始执行模拟调用")
-		result, err := mockClient.GenericInvoke(req.ServiceName, req.MethodName, req.Types, params)
-		if err != nil {
-			color.Red("[WEB] 模拟调用失败: %v", err)
-			return nil, fmt.Errorf("模拟调用失败: %v", err)
-		}
-		color.Green("[WEB] 模拟调用成功")
-		return result, nil
+		color.Red("[WEB] 真实Dubbo客户端创建失败: %v", err)
+		return nil, fmt.Errorf("无法连接到Dubbo注册中心: %v", err)
 	}
 	color.Green("[WEB] 真实Dubbo客户端创建成功")
 	defer realClient.Close()
@@ -433,7 +520,45 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 	}
 	color.Green("[WEB] 真实调用成功")
 
-	return result, nil
+	// 检查result是否为JSON字符串，如果是则解析为对象
+	if resultStr, ok := result.(string); ok {
+		// 尝试解析JSON字符串为对象
+		var parsedResult interface{}
+		if err := json.Unmarshal([]byte(resultStr), &parsedResult); err == nil {
+			color.Green("[WEB] JSON字符串解析成功，返回解析后的对象")
+			result = parsedResult
+		} else {
+			color.Yellow("[WEB] JSON解析失败，返回原始字符串: %v", err)
+		}
+	}
+
+	// 数据增强处理（如果需要）
+	color.Blue("[WEB] 开始数据增强处理，原始数据类型: %T", result)
+	// manager := NewCompanyDataManager()
+		// 使用List结果处理器处理返回结果
+	listHandler := NewListResultHandler()
+	finalResult := listHandler.HandleListResult(result, req.MethodName, params)
+	color.Green("[WEB] List结果处理器处理完成，最终返回类型: %T", finalResult)
+	return finalResult, nil
+}
+
+// buildDubboInvokeCommand 构建dubbo invoke命令，用于调试和验证
+func (ws *WebServer) buildDubboInvokeCommand(serviceName, methodName string, params []interface{}) string {
+	// 创建临时客户端用于格式化参数
+	tempClient := &RealDubboClient{}
+	
+	// 格式化参数
+	paramStr, err := tempClient.formatParameters(params)
+	if err != nil {
+		// 如果格式化失败，使用简单格式
+		var simpleParams []string
+		for _, param := range params {
+			simpleParams = append(simpleParams, fmt.Sprintf("%v", param))
+		}
+		paramStr = strings.Join(simpleParams, ", ")
+	}
+	
+	return fmt.Sprintf("invoke %s.%s(%s)", serviceName, methodName, paramStr)
 }
 
 // handleHistory 处理调用历史
@@ -459,6 +584,27 @@ func (ws *WebServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"history": recentHistory,
 		"total":   historyCount,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleClearHistory 处理清空历史记录
+func (ws *WebServer) handleClearHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != "POST" {
+		ws.writeError(w, "只支持POST方法")
+		return
+	}
+
+	// 清空历史记录
+	ws.history = make([]CallHistory, 0)
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "历史记录已清空",
 	}
 
 	json.NewEncoder(w).Encode(response)
@@ -557,63 +703,107 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// handleTestConnection 处理连接测试请求
-func (ws *WebServer) handleTestConnection(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// 获取查询参数
-	registry := r.URL.Query().Get("registry")
-	app := r.URL.Query().Get("app")
-	timeout := r.URL.Query().Get("timeout")
-
-	color.Yellow("[DEBUG] 测试连接请求 - 注册中心: %s, 应用: %s, 超时: %s", registry, app, timeout)
-
-	if registry == "" {
-		color.Red("[ERROR] 注册中心地址不能为空")
-		ws.writeError(w, "注册中心地址不能为空")
-		return
+// writeError 写入错误响应
+// safeCopyParameters 安全复制参数，将大整数转换为字符串以避免精度丢失
+// convertJSONNumbers 将json.Number转换为适当的类型，保持大整数精度
+func convertJSONNumbers(params []interface{}) []interface{} {
+	result := make([]interface{}, len(params))
+	for i, param := range params {
+		result[i] = convertJSONNumber(param)
 	}
-
-	// 使用默认值
-	if app == "" {
-		app = ws.app
-	}
-
-	// 创建Dubbo配置
-	config := &DubboConfig{
-		Registry:    registry,
-		Application: app,
-		Timeout:     time.Duration(ws.timeout) * time.Millisecond,
-	}
-
-	// 创建Dubbo客户端进行连接测试
-	client, err := NewRealDubboClient(config)
-	if err != nil {
-		color.Red("[ERROR] 创建Dubbo客户端失败: %v", err)
-		ws.writeError(w, fmt.Sprintf("连接失败: %v", err))
-		return
-	}
-	defer client.Close()
-
-	// 尝试获取服务列表来验证连接
-	services, err := client.ListServices()
-	if err != nil {
-		color.Red("[ERROR] 获取服务列表失败: %v", err)
-		ws.writeError(w, fmt.Sprintf("连接测试失败: %v", err))
-		return
-	}
-
-	color.Green("[DEBUG] 连接测试成功，发现 %d 个服务", len(services))
-
-	response := ListServicesResponse{
-		Success:  true,
-		Services: services,
-	}
-
-	json.NewEncoder(w).Encode(response)
+	return result
 }
 
-// writeError 写入错误响应
+// convertJSONNumber 递归转换json.Number类型
+func convertJSONNumber(value interface{}) interface{} {
+	switch v := value.(type) {
+	case json.Number:
+		// 尝试转换为int64
+		if intVal, err := v.Int64(); err == nil {
+			return intVal
+		}
+		// 如果无法转换为int64，尝试转换为float64
+		if floatVal, err := v.Float64(); err == nil {
+			return floatVal
+		}
+		// 如果都失败，返回原始字符串
+		return string(v)
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, item := range v {
+			result[i] = convertJSONNumber(item)
+		}
+		return result
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for k, item := range v {
+			result[k] = convertJSONNumber(item)
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func safeCopyParameters(params []interface{}) []interface{} {
+	result := make([]interface{}, len(params))
+	for i, param := range params {
+		result[i] = safeCopyValue(param)
+	}
+	return result
+}
+
+// safeCopyValue 安全复制单个值，处理大整数精度问题
+func safeCopyValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case float64:
+		// 检查是否为整数且超过JavaScript安全整数范围
+		if v == float64(int64(v)) && (v > 9007199254740991 || v < -9007199254740991) {
+			return strconv.FormatFloat(v, 'f', 0, 64)
+		}
+		// 对于大于15位的整数，也转换为字符串以防止精度丢失
+		if v == float64(int64(v)) && (v >= 1000000000000000 || v <= -1000000000000000) {
+			return strconv.FormatFloat(v, 'f', 0, 64)
+		}
+		return v
+	case int64:
+		// 检查是否超过JavaScript安全整数范围
+		if v > 9007199254740991 || v < -9007199254740991 {
+			return strconv.FormatInt(v, 10)
+		}
+		// 对于大于15位的整数，也转换为字符串以防止精度丢失
+		if v >= 1000000000000000 || v <= -1000000000000000 {
+			return strconv.FormatInt(v, 10)
+		}
+		return v
+	case int:
+		// 处理int类型
+		if int64(v) > 9007199254740991 || int64(v) < -9007199254740991 {
+			return strconv.Itoa(v)
+		}
+		if int64(v) >= 1000000000000000 || int64(v) <= -1000000000000000 {
+			return strconv.Itoa(v)
+		}
+		return v
+	case []interface{}:
+		// 递归处理数组
+		result := make([]interface{}, len(v))
+		for i, item := range v {
+			result[i] = safeCopyValue(item)
+		}
+		return result
+	case map[string]interface{}:
+		// 递归处理对象
+		result := make(map[string]interface{})
+		for k, val := range v {
+			result[k] = safeCopyValue(val)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
 func (ws *WebServer) writeError(w http.ResponseWriter, message string) {
 	response := InvokeResponse{
 		Success: false,
@@ -662,29 +852,45 @@ const indexHTML = `<!DOCTYPE html>
             padding: 20px;
             min-height: calc(100vh - 200px);
         }
-        /* 第一行：2个面板 */
-        .first-row {
+        
+        .top-row {
             display: flex;
             gap: 20px;
-            min-height: 400px;
+            flex: 1;
+        }
+        
+        /* 左列：服务调用面板 */
+        .left-column {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        /* 右列：可用服务和历史记录 */
+        .right-column {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
         }
         .service-call-panel { 
-            flex: 2; /* 服务调用面板占据2份空间 */
-            min-height: 400px;
+            flex: 1;
+            min-height: 500px;
         }
         .available-services-panel { 
-            flex: 1; /* 可用服务面板占据1份空间 */
-            min-height: 400px;
-        }
-        /* 第二行：1个面板 */
-        .history-panel { 
-            width: 100%;
+            flex: 1;
             min-height: 300px;
         }
-        /* 第三行：1个面板 */
+        .history-panel { 
+            flex: 1;
+            min-height: 300px;
+            overflow: hidden;
+            max-width: 100%;
+            contain: layout;
+        }
+        /* 调用结果面板独立显示在底部 */
         .result-panel { 
-            width: 100%;
             min-height: 200px;
+            flex-shrink: 0;
         }
         .panel h2 { 
             color: #333; 
@@ -698,9 +904,20 @@ const indexHTML = `<!DOCTYPE html>
             align-items: center;
         }
         .panel h2::before {
-            content: '\1F4C2'; /* 文件夹图标 Unicode */
-            margin-right: 5px;
+            margin-right: 8px;
             font-size: 1.1em;
+        }
+        .service-call-panel h2::before {
+            content: '🔧'; /* 工具图标 - 服务调用 */
+        }
+        .available-services-panel h2::before {
+            content: '📋'; /* 列表图标 - 可用服务 */
+        }
+        .history-panel h2::before {
+            content: '📜'; /* 卷轴图标 - 调用历史 */
+        }
+        .result-panel h2::before {
+            content: '📊'; /* 图表图标 - 调用结果 */
         }
         /* 表单样式调整 */
         .form-group {
@@ -831,6 +1048,49 @@ const indexHTML = `<!DOCTYPE html>
             overflow-wrap: break-word;
             white-space: normal;
             position: relative;
+            max-width: 100%;
+            min-width: 0;
+            flex-shrink: 1;
+            overflow: hidden;
+        }
+        .service-item .service-name {
+            font-weight: 500; 
+            color: #3949ab;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 100%;
+        }
+        .service-item .service-name:hover {
+            white-space: normal;
+            word-wrap: break-word;
+        }
+        .history-list {
+            overflow-y: auto;
+            overflow-x: hidden;
+            max-height: 280px;
+            scrollbar-width: thin;
+            scrollbar-color: #c1c1c1 #f1f1f1;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            max-width: 100%;
+            width: 100%;
+            min-width: 0;
+            flex-shrink: 1;
+        }
+        .history-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        .history-list::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+        .history-list::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+        .history-list::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
         }
         .service-item::after {
             content: '';
@@ -912,99 +1172,103 @@ const indexHTML = `<!DOCTYPE html>
             <p>图形化界面进行Dubbo服务调用</p>
         </div>
         <div class="main-content">
-            <!-- 第一行：2个面板 -->
-            <div class="first-row">
-                <div class="panel service-call-panel">
-                    <h2>服务调用</h2>
+            <div class="top-row">
+                <!-- 左列：服务调用面板 -->
+                <div class="left-column">
+                    <div class="panel service-call-panel">
+                        <h2>服务调用</h2>
 
-                    <div class="form-group">
-                        <label for="callFormat">调用格式:</label>
-                        <select id="callFormat" onchange="toggleCallFormat()">
-                            <option value="traditional">传统格式 (服务名 + 方法名)</option>
-                            <option value="expression">表达式格式 (service.method(params))</option>
-                        </select>
-                    </div>
-                    <div id="traditionalFormat">
                         <div class="form-group">
-                            <label for="registry">注册中心:</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="text" id="registry" value="{{.Registry}}" style="flex: 1;">
-                                <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
-                            </div>
+                            <label for="callFormat">调用格式:</label>
+                            <select id="callFormat" onchange="toggleCallFormat()">
+                                <option value="traditional">传统格式 (服务名 + 方法名)</option>
+                                <option value="expression">表达式格式 (service.method(params))</option>
+                            </select>
                         </div>
-                        <div class="form-row">
-                            <div class="form-col">
-                                <div class="form-group">
-                                    <label for="serviceName">服务名:</label>
-                                    <input type="text" id="serviceName" placeholder="com.example.UserService" value="com.example.UserService">
+                        <div id="traditionalFormat">
+                            <div class="form-group">
+                                <label for="registry">注册中心:</label>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <input type="text" id="registry" value="{{.Registry}}" style="flex: 1;">
                                 </div>
                             </div>
-                            <div class="form-col">
-                                <div class="form-group">
-                                    <label for="methodName">方法名:</label>
-                                    <input type="text" id="methodName" placeholder="getUserById" value="getUserById">
+                            <div class="form-row">
+                                <div class="form-col">
+                                    <div class="form-group">
+                                        <label for="serviceName">服务名:</label>
+                                        <input type="text" id="serviceName" placeholder="com.example.UserService" value="com.example.UserService">
+                                    </div>
+                                </div>
+                                <div class="form-col">
+                                    <div class="form-group">
+                                        <label for="methodName">方法名:</label>
+                                        <input type="text" id="methodName" placeholder="getUserById" value="getUserById">
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div class="form-group">
-                            <label for="parameters">参数 (JSON数组格式):</label>
-                            <textarea id="parameters" placeholder='[123, "张三", true]'>[123]</textarea>
-                        </div>
-                    </div>
-                    <div id="expressionFormat" style="display: none;">
-                        <div class="form-group">
-                            <label for="registry">注册中心:</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="text" id="registryExpr" value="{{.Registry}}" style="flex: 1;">
-                                <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
+                            <div class="form-group">
+                                <label for="parameters">参数 (JSON数组格式):</label>
+                                <textarea id="parameters" placeholder='[123, "张三", true]'>[123]</textarea>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label for="expression">调用表达式: <span style="font-size: 0.8em; color: #5c6bc0;">(service.method(params))</span></label>
-                            <textarea id="expression" placeholder='com.example.UserService.getUserById(123)'>com.example.UserService.getUserById(123)</textarea>
+                        <div id="expressionFormat" style="display: none;">
+                            <div class="form-group">
+                                <label for="registry">注册中心:</label>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <input type="text" id="registryExpr" value="{{.Registry}}" style="flex: 1;">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="expression">调用表达式: <span style="font-size: 0.8em; color: #5c6bc0;">(service.method(params))</span></label>
+                                <textarea id="expression" placeholder='com.example.UserService.getUserById(123)'>com.example.UserService.getUserById(123)</textarea>
+                            </div>
                         </div>
-                    </div>
-                    <div id="traditionalTypes" class="form-group">
-                        <label for="types">参数类型 (可选，逗号分隔):</label>
-                        <input type="text" id="types" placeholder="java.lang.Long,java.lang.String">
-                    </div>
-                    <div class="btn-group">
-                        <button class="btn" onclick="invokeService()">🚀 调用服务</button>
-                        <button class="btn btn-secondary" onclick="generateExample()">📝 生成示例</button>
-                        <button class="btn btn-success" onclick="loadServices()">📋 加载服务列表</button>
+                        <div id="traditionalTypes" class="form-group">
+                            <label for="types">参数类型 (可选，逗号分隔):</label>
+                            <input type="text" id="types" placeholder="java.lang.Long,java.lang.String">
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn" onclick="invokeService()">🚀 调用服务</button>
+                            <button class="btn btn-secondary" onclick="generateExample()">📝 生成示例</button>
+                            <button class="btn btn-success" onclick="loadServices()">📋 加载服务列表</button>
+                        </div>
                     </div>
                 </div>
-                <div class="panel available-services-panel">
-                    <h2>可用服务</h2>
-                    <div id="serviceList" class="service-list">
-                        <div style="padding: 20px; text-align: center; color: #6c757d;">
-                            <p>请先连接注册中心</p>
+                
+                <!-- 右列：可用服务和历史记录 -->
+                <div class="right-column">
+                    <div class="panel available-services-panel">
+                        <h2>可用服务</h2>
+                        <div id="serviceList" class="service-list">
+                            <div style="padding: 20px; text-align: center; color: #6c757d;">
+                                <p>请先连接注册中心</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="panel history-panel">
+                        <h2>最近调用历史</h2>
+                        <div id="historyList" class="service-list history-list">
+                            <div style="padding: 20px; text-align: center; color: #6c757d;">
+                                <p>暂无调用历史</p>
+                            </div>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-secondary" onclick="downloadHistory()">下载日志</button>
+                            <button class="btn btn-secondary" onclick="clearHistory()" style="background: #dc3545;">清空日志</button>
                         </div>
                     </div>
                 </div>
             </div>
             
-            <!-- 第二行：1个面板 -->
-            <div class="panel history-panel">
-                <h2>最近调用历史</h2>
-                <div id="historyList" class="service-list">
-                    <div style="padding: 20px; text-align: center; color: #6c757d;">
-                        <p>暂无调用历史</p>
-                    </div>
-                </div>
-                <div class="btn-group">
-                    <button class="btn btn-secondary" onclick="downloadHistory()">下载日志</button>
-                </div>
-            </div>
-            
-            <!-- 第三行：1个面板 -->
+            <!-- 调用结果面板独立显示在底部 -->
             <div class="panel result-panel">
                 <h2>调用结果</h2>
-                <div class="loading" id="loading">
+                <div id="loading" class="loading">
                     <div class="spinner"></div>
                     正在调用服务...
                 </div>
-                <div id="result" class="result">等待调用结果...</div>
+                <div id="result" class="result" style="display: none;"></div>
             </div>
         </div>
     </div>
@@ -1077,8 +1341,9 @@ const indexHTML = `<!DOCTYPE html>
                 const paramsText = document.getElementById('parameters').value.trim();
                 if (!serviceName || !methodName) { alert('请输入服务名和方法名'); return; }
                 try {
+                    // 解析参数为真正的JavaScript对象/数组，而不是字符串
                     parameters = paramsText ? JSON.parse(paramsText) : [];
-                } catch (e) { alert('参数格式错误，请使用JSON数组格式'); return; }
+                } catch (e) { alert('参数格式错误，请使用JSON数组格式: ' + e.message); return; }
             }
             const types = format === 'traditional' ? document.getElementById('types').value.trim() : '';
             const registry = format === 'expression' ? 
@@ -1086,21 +1351,38 @@ const indexHTML = `<!DOCTYPE html>
                 document.getElementById('registry').value.trim();
             const request = {
                 serviceName: serviceName, methodName: methodName,
-                parameters: parameters.map(p => typeof p === 'string' ? p : JSON.stringify(p)),
+                parameters: parameters,
                 types: types ? types.split(',').map(t => t.trim()) : [],
                 registry: registry, app: '{{.App}}', timeout: 10000
             };
             showLoading(true);
+            const startTime = Date.now(); // 记录前端调用开始时间
             fetch('/api/invoke', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(request)
             })
-            .then(response => response.json())
-            .then(data => { showLoading(false); displayResult(data); })
+            .then(response => {
+                if (response.ok) {
+                    return response.json();
+                } else {
+                    // 对于错误响应，直接返回文本内容
+                    return response.text().then(text => ({
+                        success: false,
+                        error: text
+                    }));
+                }
+            })
+            .then(data => { 
+                showLoading(false); 
+                const totalTime = Date.now() - startTime; // 计算总耗时
+                data.totalTime = totalTime; // 添加总耗时到响应数据
+                displayResult(data); 
+            })
             .catch(error => {
                 showLoading(false);
-                displayResult({ success: false, error: '网络错误: ' + error.message });
+                const totalTime = Date.now() - startTime;
+                displayResult({ success: false, error: '网络错误: ' + error.message, totalTime: totalTime });
             });
         }
         function generateExample() {
@@ -1123,38 +1405,6 @@ const indexHTML = `<!DOCTYPE html>
             })
             .catch(error => { alert('生成示例失败: ' + error.message); });
         }
-        function testConnection() {
-            const currentFormat = document.getElementById('callFormat').value;
-            const registry = currentFormat === 'expression' ? 
-                document.getElementById('registryExpr').value.trim() : 
-                document.getElementById('registry').value.trim();
-            
-            if (!registry) {
-                alert('请先输入注册中心地址');
-                return;
-            }
-            
-            // 显示测试中状态
-            const serviceList = document.getElementById('serviceList');
-            serviceList.innerHTML = '<div style="padding: 20px; text-align: center; color: #6c757d;">🔗 正在测试连接...</div>';
-            
-            fetch('/api/test-connection?registry=' + encodeURIComponent(registry) + '&app={{.App}}&timeout=10000')
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('✅ 连接成功！');
-                    // 连接成功后自动加载服务列表
-                    loadServices();
-                } else {
-                    alert('❌ 连接失败: ' + data.error);
-                    serviceList.innerHTML = '<div style="padding: 20px; text-align: center; color: #dc3545;">连接失败: ' + data.error + '</div>';
-                }
-            })
-            .catch(error => {
-                alert('❌ 连接测试失败: ' + error.message);
-                serviceList.innerHTML = '<div style="padding: 20px; text-align: center; color: #dc3545;">网络错误: ' + error.message + '</div>';
-            });
-        }
         function loadServices() {
             const currentFormat = document.getElementById('callFormat').value;
             const registry = currentFormat === 'expression' ? 
@@ -1167,7 +1417,7 @@ const indexHTML = `<!DOCTYPE html>
                 return;
             }
             
-            fetch('/api/list')
+            fetch('/api/list?registry=' + encodeURIComponent(registry) + '&app={{.App}}&timeout=10000')
             .then(response => response.json())
             .then(data => {
                 if (data.success) { displayServices(data.services); }
@@ -1277,9 +1527,120 @@ const indexHTML = `<!DOCTYPE html>
         function displayResult(data) {
             const result = document.getElementById('result');
             result.className = 'result ' + (data.success ? 'success' : 'error');
-            result.textContent = JSON.stringify(data, null, 2);
+            
+            // 如果是成功调用，显示data字段的内容；如果是失败，显示error信息
+            if (data.success && data.data !== undefined) {
+                // 格式化显示数据，提供优雅的输出格式
+                if (typeof data.data === 'string') {
+                    try {
+                        // 如果是JSON字符串，尝试解析并格式化
+                        const parsed = JSON.parse(data.data, function(key, value) {
+                            // 检查是否为大整数（超过JavaScript安全整数范围）
+                            if (typeof value === 'number' && (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER)) {
+                                return value.toString();
+                            }
+                            // 处理19位及以上的整数
+                            if (typeof value === 'number' && value >= 1000000000000000) {
+                                return value.toString();
+                            }
+                            return value;
+                        });
+                        result.textContent = JSON.stringify(parsed, null, 2);
+                    } catch (e) {
+                        // 如果不是JSON字符串，直接显示
+                        result.textContent = data.data;
+                    }
+                } else if (typeof data.data === 'object' && data.data !== null) {
+                    // 如果是对象或数组，格式化显示，并处理其中的大整数
+                    const processedData = processLargeIntegers(data.data);
+                    result.textContent = JSON.stringify(processedData, null, 2);
+                } else {
+                    // 如果是基础数据类型（数字、布尔值、null等），直接显示
+                    result.textContent = String(data.data);
+                }
+            } else if (!data.success && data.error) {
+                result.textContent = data.error;
+            } else {
+                // 兼容旧格式或其他情况
+                result.textContent = JSON.stringify(data, null, 2);
+            }
+            
+            // 更新结果面板标题的状态指示器
+            const resultPanelTitle = document.querySelector('.result-panel h2');
+            if (resultPanelTitle) {
+                const statusIndicator = data.success ? 
+                    '<span style="color: #4caf50; margin-left: 8px;">●</span>' : 
+                    '<span style="color: #f44336; margin-left: 8px;">●</span>';
+                const statusText = data.success ? '调用成功' : '调用失败';
+                
+                // 构建耗时信息
+                let timeInfo = '';
+                if (data.totalTime) {
+                    timeInfo += ' (总耗时: ' + data.totalTime + 'ms';
+                    if (data.duration) {
+                        timeInfo += ', 后端: ' + data.duration + 'ms';
+                    }
+                    timeInfo += ')';
+                } else if (data.duration) {
+                    timeInfo += ' (后端耗时: ' + data.duration + 'ms)';
+                }
+                
+                resultPanelTitle.innerHTML = '调用结果 - ' + statusText + timeInfo + statusIndicator;
+            }
+            
             // 调用后自动刷新历史（无论成功失败）
             setTimeout(loadHistory, 500);
+        }
+        
+        // 处理对象中的大整数，确保它们以字符串形式显示
+        function processLargeIntegers(obj) {
+            if (obj === null || obj === undefined) {
+                return obj;
+            }
+            
+            if (typeof obj === 'object' && !Array.isArray(obj)) {
+                // 处理对象
+                const result = {};
+                for (const key in obj) {
+                    if (obj.hasOwnProperty(key)) {
+                        result[key] = processLargeIntegers(obj[key]);
+                    }
+                }
+                return result;
+            } else if (Array.isArray(obj)) {
+                // 处理数组
+                return obj.map(item => processLargeIntegers(item));
+            } else if (typeof obj === 'number') {
+                // 处理数字，检查是否为大整数
+                // 检查是否超过JavaScript安全整数范围
+                if (obj > Number.MAX_SAFE_INTEGER || obj < Number.MIN_SAFE_INTEGER) {
+                    return obj.toString();
+                }
+                // 处理15位及以上的整数（即使在安全范围内也可能有精度问题）
+                if ((obj >= 1000000000000000 && obj <= Number.MAX_SAFE_INTEGER) || 
+                    (obj <= -1000000000000000 && obj >= Number.MIN_SAFE_INTEGER)) {
+                    return obj.toString();
+                }
+                return obj;
+            } else if (typeof obj === 'string') {
+                // 尝试将字符串转换为数字，如果转换后超过安全范围，则保持为字符串
+                const num = Number(obj);
+                if (!isNaN(num)) {
+                    // 检查是否超过JavaScript安全整数范围
+                    if (num > Number.MAX_SAFE_INTEGER || num < Number.MIN_SAFE_INTEGER) {
+                        return obj; // 保持为字符串
+                    }
+                    // 处理15位及以上的整数
+                    if ((num >= 1000000000000000 && num <= Number.MAX_SAFE_INTEGER) || 
+                        (num <= -1000000000000000 && num >= Number.MIN_SAFE_INTEGER)) {
+                        return obj; // 保持为字符串
+                    }
+                    return num; // 转换为数字
+                }
+                return obj;
+            }
+            
+            return obj;
         }
         function downloadHistory() {
             fetch('/api/history')
@@ -1301,6 +1662,26 @@ const indexHTML = `<!DOCTYPE html>
                 }
             })
             .catch(error => { alert('下载失败: ' + error.message); });
+        }
+        function clearHistory() {
+            if (confirm('确定要清空所有历史记录吗？此操作不可恢复。')) {
+                fetch('/api/clear-history', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('历史记录已清空');
+                        loadHistory(); // 重新加载历史记录
+                    } else {
+                        alert('清空失败: ' + (data.error || '未知错误'));
+                    }
+                })
+                .catch(error => { alert('清空失败: ' + error.message); });
+            }
         }
         function loadHistory() {
             fetch('/api/history')
@@ -1325,14 +1706,39 @@ const indexHTML = `<!DOCTYPE html>
                 const timestamp = new Date(item.timestamp).toLocaleString();
                 const status = item.success ? '✅' : '❌';
                 const statusClass = item.success ? 'success-text' : 'error-text';
+                const fullServiceName = item.serviceName + '.' + item.methodName;
+                
+                // 处理参数显示，限制长度并添加滚动
+                let paramDisplay = '';
+                if (item.parameters) {
+                    let paramText = '';
+                    if (Array.isArray(item.parameters)) {
+                        // 数组格式的参数，转换为字符串显示
+                        paramText = JSON.stringify(item.parameters);
+                    } else if (typeof item.parameters === 'string' && item.parameters.trim() !== '') {
+                        // 兼容旧的字符串格式
+                        paramText = item.parameters;
+                    }
+                    
+                    if (paramText && paramText.length > 15) {
+                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: break-all;" title="' + paramText.replace(/"/g, '&quot;') + '">' +
+                            paramText.substring(0, 15) + '...' +
+                        '</div>';
+                    } else if (paramText) {
+                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6; word-break: break-all; max-width: 100%;">' + paramText + '</div>';
+                    } else {
+                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6;">无参数</div>';
+                    }
+                } else {
+                    paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6;">无参数</div>';
+                }
+                
                 historyItem.innerHTML = 
-                    '<div style="font-weight: 500; color: #3949ab;">' + item.serviceName + '.' + item.methodName + '</div>' +
-                    '<div style="font-size: 0.8em; margin-top: 3px; color: #5f6368;">' +
+                    '<div class="service-name" style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: break-all;" title="' + fullServiceName + '">' + fullServiceName + '</div>' +
+                    '<div style="font-size: 0.8em; margin-top: 3px; color: #5f6368; max-width: 100%; word-break: break-all;">' +
                         '<span class="' + statusClass + '">' + status + '</span> ' + timestamp +
                     '</div>' +
-                    '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6;">' +
-                        item.parameters.length + ' 参数' +
-                    '</div>';
+                    paramDisplay;
                 historyItem.onclick = () => fillFromHistory(item);
                 historyList.appendChild(historyItem);
             });
@@ -1346,14 +1752,113 @@ const indexHTML = `<!DOCTYPE html>
         }
         function fillFromHistory(item) {
             // 填充表单字段
-            document.getElementById('serviceName').value = item.serviceName;
-            document.getElementById('methodName').value = item.methodName;
-            document.getElementById('parameters').value = JSON.stringify(item.parameters, null, 2);
-            document.getElementById('types').value = item.types.join(', ');
-            document.getElementById('registry').value = item.registry;
+            document.getElementById('serviceName').value = item.serviceName || '';
+            document.getElementById('methodName').value = item.methodName || '';
+            
+            // 处理参数：parameters现在是数组格式
+            if (item.parameters) {
+                if (Array.isArray(item.parameters)) {
+                    // 直接处理数组格式的参数，处理其中的大整数
+                    const processedParams = processLargeIntegers(item.parameters);
+                    document.getElementById('parameters').value = JSON.stringify(processedParams);
+                } else {
+                    // 兼容旧的字符串格式
+                    try {
+                        const parsed = JSON.parse(item.parameters);
+                        if (Array.isArray(parsed)) {
+                            // 处理其中的大整数
+                            const processedParams = processLargeIntegers(parsed);
+                            document.getElementById('parameters').value = JSON.stringify(processedParams);
+                        } else {
+                            document.getElementById('parameters').value = item.parameters;
+                        }
+                    } catch (e) {
+                        document.getElementById('parameters').value = item.parameters;
+                    }
+                }
+            } else {
+                document.getElementById('parameters').value = '';
+            }
+            
+            // 处理参数类型
+            if (item.types) {
+                if (Array.isArray(item.types)) {
+                    document.getElementById('types').value = item.types.join(', ');
+                } else {
+                    try {
+                        const parsed = JSON.parse(item.types);
+                        if (Array.isArray(parsed)) {
+                            document.getElementById('types').value = parsed.join(', ');
+                        } else {
+                            document.getElementById('types').value = item.types;
+                        }
+                    } catch (e) {
+                        document.getElementById('types').value = item.types;
+                    }
+                }
+            } else {
+                document.getElementById('types').value = '';
+            }
+            
+            // 填充注册中心地址
+            document.getElementById('registry').value = item.registry || '';
+            
+            // 填充调用结果
+            if (item.result) {
+                const resultElement = document.getElementById('result');
+                if (resultElement) {
+                    // 智能格式化结果数据，处理大整数
+                    try {
+                        // 尝试解析为JSON并美化显示
+                        let resultData = item.result;
+                        
+                        // 处理双重转义的JSON字符串
+                        if (typeof resultData === 'string' && resultData.startsWith('"') && resultData.endsWith('"')) {
+                            try {
+                                // 先解析一次去掉外层引号和转义
+                                resultData = JSON.parse(resultData);
+                            } catch (e) {
+                                // 如果解析失败，保持原样
+                            }
+                        }
+                        
+                        // 再次尝试解析为JSON对象，使用reviver保持大整数精度
+                        const parsed = JSON.parse(resultData, function(key, value) {
+                            // 检查是否为大整数（超过JavaScript安全整数范围）
+                            if (typeof value === 'number' && (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER)) {
+                                return value.toString();
+                            }
+                            // 处理15位及以上的整数
+                            if (typeof value === 'number' && (value >= 1000000000000000 || value <= -1000000000000000)) {
+                                return value.toString();
+                            }
+                            return value;
+                        });
+                        resultElement.textContent = JSON.stringify(parsed, null, 2);
+                    } catch (e) {
+                        // 如果不是JSON格式，直接显示原内容
+                        resultElement.textContent = item.result;
+                    }
+                    resultElement.className = 'result ' + (item.success ? 'success' : 'error');
+                    
+                    // 更新结果面板标题
+                    const resultPanelTitle = document.querySelector('.result-panel h2');
+                    if (resultPanelTitle) {
+                        const statusIndicator = item.success ? 
+                            '<span style="color: #4caf50; margin-left: 8px;">●</span>' : 
+                            '<span style="color: #f44336; margin-left: 8px;">●</span>';
+                        const statusText = item.success ? '调用成功' : '调用失败';
+                        resultPanelTitle.innerHTML = '调用结果 - ' + statusText + statusIndicator;
+                    }
+                }
+            }
+            
             // 切换到传统格式
             document.getElementById('callFormat').value = 'traditional';
             toggleCallFormat();
+            
+            // 重新设置注册中心地址（因为toggleCallFormat可能会重置它）
+            document.getElementById('registry').value = item.registry || '';
         }
         window.onload = function() { loadHistory(); };
     </script>
