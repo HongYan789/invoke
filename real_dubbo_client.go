@@ -210,7 +210,7 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	consecutiveSmallReads := 0
 
 	totalReadTime := time.Duration(0)
-	maxReadAttempts := 20 // 增加最大读取尝试次数
+	maxReadAttempts := 50 // 进一步增加最大读取尝试次数，确保大数据量的完整读取
 	
 	for readAttempts := 0; readAttempts < maxReadAttempts; readAttempts++ {
 		readStart := time.Now()
@@ -260,17 +260,17 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 				fmt.Printf("[DUBBO CLIENT] 响应完整，退出读取循环\n")
 				break
 			}
-			// 连续三次小读取，很可能数据已经传输完成
-			if consecutiveSmallReads >= 3 {
-				fmt.Printf("[DUBBO CLIENT] 连续小读取达到3次，退出读取循环\n")
+			// 增加连续小读取的容忍度，从3次增加到6次，确保不会过早退出
+			if consecutiveSmallReads >= 6 {
+				fmt.Printf("[DUBBO CLIENT] 连续小读取达到6次，退出读取循环\n")
 				break
 			}
 			// 设置较短的超时等待可能的后续数据
-			c.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		} else {
 			consecutiveSmallReads = 0
 			// 数据还在持续传输，保持原有超时
-			c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		}
 		
 		// 检查是否包含dubbo命令结束标志
@@ -641,8 +641,24 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 		}
 	}
 	
-	// 首先尝试从整个响应中提取JSON
-	// 1. 查找最大的JSON对象或数组
+	// 首先尝试直接解析原始响应作为JSON
+	if strings.HasPrefix(strings.TrimSpace(responseText), "[") {
+		// 尝试直接验证原始响应是否为有效JSON
+		var jsonTest interface{}
+		decoder := json.NewDecoder(strings.NewReader(responseText))
+		decoder.UseNumber()
+		if decoder.Decode(&jsonTest) == nil {
+			return responseText
+		} else {
+			// 尝试修复不完整的JSON数组
+			fixed := c.fixIncompleteJSON(responseText)
+			if fixed != "" {
+				return fixed
+			}
+		}
+	}
+	
+	// 如果直接解析失败，使用原来的extractLargestJSON方法
 	jsonResult := c.extractLargestJSON(responseText)
 	if jsonResult != "" {
 		// 检查是否为数组类型，如果是则直接返回
@@ -750,10 +766,80 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 	return responseText
 }
 
+// fixIncompleteJSON 尝试修复不完整的JSON数组
+func (c *RealDubboClient) fixIncompleteJSON(responseText string) string {
+	// 查找最后一个完整的JSON对象
+	lastCompleteIndex := -1
+	braceCount := 0
+	inObject := false
+	
+	for i, char := range responseText {
+		switch char {
+		case '{':
+			if !inObject {
+				inObject = true
+				braceCount = 1
+			} else {
+				braceCount++
+			}
+		case '}':
+			if inObject {
+				braceCount--
+				if braceCount == 0 {
+					// 找到一个完整的对象
+					lastCompleteIndex = i
+					inObject = false
+				}
+			}
+		}
+	}
+	
+	if lastCompleteIndex > 0 {
+		// 截取到最后一个完整对象的位置，并添加数组结束符
+		fixedJSON := responseText[:lastCompleteIndex+1] + "]"
+		
+		// 验证修复后的JSON是否有效
+		var jsonTest interface{}
+		decoder := json.NewDecoder(strings.NewReader(fixedJSON))
+		decoder.UseNumber()
+		if decoder.Decode(&jsonTest) == nil {
+			return fixedJSON
+		}
+	}
+	
+	return ""
+}
+
 // extractLargestJSON 从响应文本中提取最大的有效JSON
 func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 	// 查找所有可能的JSON起始位置
 	var candidates []string
+	
+	// 查找JSON数组 [...] - 优先处理数组
+	for i := 0; i < len(responseText); i++ {
+		if responseText[i] == '[' {
+			// 找到匹配的右括号
+			bracketCount := 1
+			for j := i + 1; j < len(responseText) && bracketCount > 0; j++ {
+				if responseText[j] == '[' {
+					bracketCount++
+				} else if responseText[j] == ']' {
+					bracketCount--
+				}
+				if bracketCount == 0 {
+					candidate := responseText[i:j+1]
+					// 验证是否为有效JSON
+					var jsonTest interface{}
+					decoder := json.NewDecoder(strings.NewReader(candidate))
+					decoder.UseNumber()
+					if decoder.Decode(&jsonTest) == nil {
+						candidates = append(candidates, candidate)
+					}
+					break
+				}
+			}
+		}
+	}
 	
 	// 查找JSON对象 {...}
 	for i := 0; i < len(responseText); i++ {
@@ -768,39 +854,13 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 				}
 				if braceCount == 0 {
 					candidate := responseText[i:j+1]
-				// 验证是否为有效JSON
-				var jsonTest interface{}
-				decoder := json.NewDecoder(strings.NewReader(candidate))
-				decoder.UseNumber()
-				if decoder.Decode(&jsonTest) == nil {
-					candidates = append(candidates, candidate)
-				}
-					break
-				}
-			}
-		}
-	}
-	
-	// 查找JSON数组 [...]
-	for i := 0; i < len(responseText); i++ {
-		if responseText[i] == '[' {
-			// 找到匹配的右括号
-			bracketCount := 1
-			for j := i + 1; j < len(responseText) && bracketCount > 0; j++ {
-				if responseText[j] == '[' {
-					bracketCount++
-				} else if responseText[j] == ']' {
-					bracketCount--
-				}
-				if bracketCount == 0 {
-					candidate := responseText[i:j+1]
-				// 验证是否为有效JSON
-				var jsonTest interface{}
-				decoder := json.NewDecoder(strings.NewReader(candidate))
-				decoder.UseNumber()
-				if decoder.Decode(&jsonTest) == nil {
-					candidates = append(candidates, candidate)
-				}
+					// 验证是否为有效JSON
+					var jsonTest interface{}
+					decoder := json.NewDecoder(strings.NewReader(candidate))
+					decoder.UseNumber()
+					if decoder.Decode(&jsonTest) == nil {
+						candidates = append(candidates, candidate)
+					}
 					break
 				}
 			}
@@ -820,31 +880,26 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 
 // isResponseComplete 检查响应是否完整
 func (c *RealDubboClient) isResponseComplete(responseText string) bool {
-	fmt.Printf("[DUBBO CLIENT] 检查响应完整性: %s\n", responseText)
-	
 	// 1. 检查是否包含dubbo命令结束标志
 	if strings.Contains(responseText, "dubbo>") && 
 	   (strings.Contains(responseText, "elapsed:") || strings.Contains(responseText, "ms.")) {
-		fmt.Printf("[DUBBO CLIENT] 检测到dubbo结束标志\n")
 		return true
 	}
 	
 	// 1.5. 特殊处理null响应：如果响应只包含"null"和"dubbo>"，认为是完整的null响应
 	if strings.Contains(responseText, "dubbo>") && 
 	   (strings.TrimSpace(strings.Replace(responseText, "dubbo>", "", -1)) == "null") {
-		fmt.Printf("[DUBBO CLIENT] 检测到完整的null响应\n")
 		return true
 	}
 	
 	// 2. 尝试提取JSON，如果能提取到完整的JSON，认为响应完整
 	jsonResult := c.extractLargestJSON(responseText)
-	if jsonResult != "" && len(jsonResult) > 10 { // 至少10个字符的JSON
+	if jsonResult != "" { // 移除长度限制，任何有效JSON都应该被接受
 		// 验证JSON是否完整（能够成功解析），使用json.Number保持精度
 		decoder := json.NewDecoder(strings.NewReader(jsonResult))
 		decoder.UseNumber()
 		var jsonTest interface{}
 		if decoder.Decode(&jsonTest) == nil {
-			fmt.Printf("[DUBBO CLIENT] 提取到有效JSON: %s\n", jsonResult)
 			return true
 		}
 	}
@@ -853,7 +908,6 @@ func (c *RealDubboClient) isResponseComplete(responseText string) bool {
 	if strings.Contains(responseText, "Failed to invoke") || 
 	   strings.Contains(responseText, "No such service") ||
 	   strings.Contains(responseText, "No provider") {
-		fmt.Printf("[DUBBO CLIENT] 检测到错误信息\n")
 		return true
 	}
 	
@@ -864,7 +918,6 @@ func (c *RealDubboClient) isResponseComplete(responseText string) bool {
 		decoder.UseNumber()
 		var jsonArray []interface{}
 		if decoder.Decode(&jsonArray) == nil {
-			fmt.Printf("[DUBBO CLIENT] 检测到完整JSON数组\n")
 			return true
 		}
 	}
@@ -876,11 +929,9 @@ func (c *RealDubboClient) isResponseComplete(responseText string) bool {
 		decoder.UseNumber()
 		var jsonObj map[string]interface{}
 		if decoder.Decode(&jsonObj) == nil {
-			fmt.Printf("[DUBBO CLIENT] 检测到完整JSON对象\n")
 			return true
 		}
 	}
 	
-	fmt.Printf("[DUBBO CLIENT] 响应不完整\n")
 	return false
 }
