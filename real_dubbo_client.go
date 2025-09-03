@@ -1,22 +1,482 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"strings"
-	"time"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"io"
-	"bytes"
+	"net"
+	"strings"
+	"sync"
+	"time"
 )
+
+// ChunkedTransferManager 分块传输管理器
+type ChunkedTransferManager struct {
+	chunkSize    int
+	maxChunks    int
+	timeout      time.Duration
+	compression  bool
+}
+
+// NewChunkedTransferManager 创建分块传输管理器
+func NewChunkedTransferManager(chunkSize, maxChunks int, timeout time.Duration, compression bool) *ChunkedTransferManager {
+	return &ChunkedTransferManager{
+		chunkSize:   chunkSize,
+		maxChunks:   maxChunks,
+		timeout:     timeout,
+		compression: compression,
+	}
+}
+
+// ReadChunkedData 读取分块数据
+func (ctm *ChunkedTransferManager) ReadChunkedData(conn net.Conn) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ctm.timeout)
+	defer cancel()
+
+	var buffer bytes.Buffer
+	chunkBuffer := make([]byte, ctm.chunkSize)
+	chunkCount := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("分块读取超时")
+		default:
+		}
+
+		if chunkCount >= ctm.maxChunks {
+			return nil, fmt.Errorf("超过最大分块数量限制: %d", ctm.maxChunks)
+		}
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(chunkBuffer)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				if buffer.Len() > 0 {
+					break // 已读取数据，超时退出
+				}
+				return nil, fmt.Errorf("分块读取超时: %v", err)
+			}
+			if buffer.Len() > 0 {
+				break // 已读取数据，错误退出
+			}
+			return nil, fmt.Errorf("分块读取失败: %v", err)
+		}
+
+		if n == 0 {
+			break
+		}
+
+		buffer.Write(chunkBuffer[:n])
+		chunkCount++
+
+		// 检查是否读取完整
+		if n < len(chunkBuffer) {
+			break
+		}
+	}
+
+	data := buffer.Bytes()
+	if ctm.compression {
+		return ctm.decompressData(data)
+	}
+	return data, nil
+}
+
+// WriteChunkedData 写入分块数据
+func (ctm *ChunkedTransferManager) WriteChunkedData(conn net.Conn, data []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), ctm.timeout)
+	defer cancel()
+
+	if ctm.compression {
+		compressed, err := ctm.compressData(data)
+		if err != nil {
+			return fmt.Errorf("数据压缩失败: %v", err)
+		}
+		data = compressed
+	}
+
+	totalSize := len(data)
+	written := 0
+
+	for written < totalSize {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("分块写入超时")
+		default:
+		}
+
+		chunkEnd := written + ctm.chunkSize
+		if chunkEnd > totalSize {
+			chunkEnd = totalSize
+		}
+
+		chunk := data[written:chunkEnd]
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Write(chunk)
+		if err != nil {
+			return fmt.Errorf("分块写入失败: %v", err)
+		}
+
+		written += n
+	}
+
+	return nil
+}
+
+// compressData 压缩数据
+func (ctm *ChunkedTransferManager) compressData(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gzWriter := gzip.NewWriter(&buf)
+	
+	_, err := gzWriter.Write(data)
+	if err != nil {
+		return nil, err
+	}
+	
+	err = gzWriter.Close()
+	if err != nil {
+		return nil, err
+	}
+	
+	return buf.Bytes(), nil
+}
+
+// decompressData 解压数据
+func (ctm *ChunkedTransferManager) decompressData(data []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		// 如果不是gzip格式，直接返回原数据
+		return data, nil
+	}
+	defer reader.Close()
+	
+	return io.ReadAll(reader)
+}
+
+// StreamProcessor 流式处理器
+type StreamProcessor struct {
+	bufferPool   *sync.Pool
+	processorCh  chan []byte
+	resultCh     chan ProcessResult
+	ctx          context.Context
+	cancel       context.CancelFunc
+}
+
+// ProcessResult 处理结果
+type ProcessResult struct {
+	Data  interface{}
+	Error error
+}
+
+// NewStreamProcessor 创建流式处理器
+func NewStreamProcessor(bufferSize int) *StreamProcessor {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &StreamProcessor{
+		bufferPool: &sync.Pool{
+			New: func() interface{} {
+				return make([]byte, bufferSize)
+			},
+		},
+		processorCh: make(chan []byte, 100),
+		resultCh:    make(chan ProcessResult, 100),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+}
+
+// StartProcessing 开始流式处理
+func (sp *StreamProcessor) StartProcessing() {
+	go func() {
+		for {
+			select {
+			case <-sp.ctx.Done():
+				return
+			case data := <-sp.processorCh:
+				result := sp.processChunk(data)
+				sp.resultCh <- result
+				// 回收缓冲区
+				sp.bufferPool.Put(data[:cap(data)])
+			}
+		}
+	}()
+}
+
+// processChunk 处理数据块
+func (sp *StreamProcessor) processChunk(data []byte) ProcessResult {
+	// 尝试解析JSON
+	var result interface{}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	
+	if err := decoder.Decode(&result); err != nil {
+		return ProcessResult{Error: err}
+	}
+	
+	return ProcessResult{Data: result}
+}
+
+// GetBuffer 获取缓冲区
+func (sp *StreamProcessor) GetBuffer() []byte {
+	return sp.bufferPool.Get().([]byte)
+}
+
+// PutBuffer 归还缓冲区
+func (sp *StreamProcessor) PutBuffer(buf []byte) {
+	sp.bufferPool.Put(buf)
+}
+
+// Stop 停止处理
+func (sp *StreamProcessor) Stop() {
+	sp.cancel()
+	close(sp.processorCh)
+	close(sp.resultCh)
+}
+
+// MemoryManager 内存管理器
+type MemoryManager struct {
+	objectPool   *sync.Pool
+	bufferPool   *sync.Pool
+	maxPoolSize  int
+	currentSize  int
+	mu           sync.RWMutex
+}
+
+// NewMemoryManager 创建内存管理器
+func NewMemoryManager(maxPoolSize int) *MemoryManager {
+	return &MemoryManager{
+		objectPool: &sync.Pool{
+			New: func() interface{} {
+				return make(map[string]interface{})
+			},
+		},
+		bufferPool: &sync.Pool{
+			New: func() interface{} {
+				return bytes.NewBuffer(make([]byte, 0, 8192))
+			},
+		},
+		maxPoolSize: maxPoolSize,
+	}
+}
+
+// GetObject 获取对象
+func (mm *MemoryManager) GetObject() map[string]interface{} {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	
+	if mm.currentSize < mm.maxPoolSize {
+		mm.currentSize++
+		return mm.objectPool.Get().(map[string]interface{})
+	}
+	return make(map[string]interface{})
+}
+
+// PutObject 归还对象
+func (mm *MemoryManager) PutObject(obj map[string]interface{}) {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	
+	// 清空对象
+	for k := range obj {
+		delete(obj, k)
+	}
+	
+	if mm.currentSize > 0 {
+		mm.objectPool.Put(obj)
+		mm.currentSize--
+	}
+}
+
+// GetBuffer 获取缓冲区
+func (mm *MemoryManager) GetBuffer() *bytes.Buffer {
+	buf := mm.bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	return buf
+}
+
+// PutBuffer 归还缓冲区
+func (mm *MemoryManager) PutBuffer(buf *bytes.Buffer) {
+	mm.bufferPool.Put(buf)
+}
+
+// AsyncProcessor 异步处理器
+type AsyncProcessor struct {
+	workerPool   chan chan AsyncTask
+	taskQueue    chan AsyncTask
+	workerCount  int
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+}
+
+// AsyncTask 异步任务
+type AsyncTask struct {
+	ID       string
+	Data     interface{}
+	Callback func(interface{}, error)
+	Timeout  time.Duration
+}
+
+// NewAsyncProcessor 创建异步处理器
+func NewAsyncProcessor(workerCount int) *AsyncProcessor {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &AsyncProcessor{
+		workerPool:  make(chan chan AsyncTask, workerCount),
+		taskQueue:   make(chan AsyncTask, workerCount*10),
+		workerCount: workerCount,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+}
+
+// Start 启动异步处理器
+func (ap *AsyncProcessor) Start() {
+	// 启动工作协程
+	for i := 0; i < ap.workerCount; i++ {
+		ap.wg.Add(1)
+		go ap.worker()
+	}
+	
+	// 启动任务分发协程
+	go ap.dispatcher()
+}
+
+// worker 工作协程
+func (ap *AsyncProcessor) worker() {
+	defer ap.wg.Done()
+	
+	taskChan := make(chan AsyncTask)
+	
+	for {
+		// 注册工作协程
+		select {
+		case ap.workerPool <- taskChan:
+			// 等待任务
+			select {
+			case task := <-taskChan:
+				ap.processTask(task)
+			case <-ap.ctx.Done():
+				return
+			}
+		case <-ap.ctx.Done():
+			return
+		}
+	}
+}
+
+// dispatcher 任务分发器
+func (ap *AsyncProcessor) dispatcher() {
+	for {
+		select {
+		case task := <-ap.taskQueue:
+			// 获取可用工作协程
+			select {
+			case workerChan := <-ap.workerPool:
+				// 分发任务
+				select {
+				case workerChan <- task:
+				case <-ap.ctx.Done():
+					return
+				}
+			case <-ap.ctx.Done():
+				return
+			}
+		case <-ap.ctx.Done():
+			return
+		}
+	}
+}
+
+// processTask 处理任务
+func (ap *AsyncProcessor) processTask(task AsyncTask) {
+	ctx, cancel := context.WithTimeout(context.Background(), task.Timeout)
+	defer cancel()
+	
+	done := make(chan struct{})
+	var result interface{}
+	var err error
+	
+	go func() {
+		defer close(done)
+		// 这里可以根据任务类型进行不同的处理
+		result = task.Data
+	}()
+	
+	select {
+	case <-done:
+		if task.Callback != nil {
+			task.Callback(result, err)
+		}
+	case <-ctx.Done():
+		if task.Callback != nil {
+			task.Callback(nil, fmt.Errorf("任务超时: %s", task.ID))
+		}
+	}
+}
+
+// SubmitTask 提交任务
+func (ap *AsyncProcessor) SubmitTask(task AsyncTask) error {
+	select {
+	case ap.taskQueue <- task:
+		return nil
+	case <-ap.ctx.Done():
+		return fmt.Errorf("异步处理器已关闭")
+	default:
+		return fmt.Errorf("任务队列已满")
+	}
+}
+
+// Stop 停止异步处理器
+func (ap *AsyncProcessor) Stop() {
+	ap.cancel()
+	ap.wg.Wait()
+}
+
+// OptimizedDubboConfig 优化的Dubbo配置
+type OptimizedDubboConfig struct {
+	*DubboConfig
+	MaxPayloadSize    int           // 最大负载大小
+	ChunkSize         int           // 分块大小
+	MaxChunks         int           // 最大分块数
+	CompressionLevel  int           // 压缩级别
+	WorkerCount       int           // 工作协程数
+	BufferPoolSize    int           // 缓冲池大小
+	ConnectionPool    int           // 连接池大小
+	RetryAttempts     int           // 重试次数
+	RetryDelay        time.Duration // 重试延迟
+}
+
+// NewOptimizedDubboConfig 创建优化的Dubbo配置
+func NewOptimizedDubboConfig(base *DubboConfig) *OptimizedDubboConfig {
+	return &OptimizedDubboConfig{
+		DubboConfig:       base,
+		MaxPayloadSize:    50 * 1024 * 1024, // 50MB
+		ChunkSize:         8192,              // 8KB
+		MaxChunks:         1000,              // 最大1000个分块
+		CompressionLevel:  6,                 // gzip压缩级别
+		WorkerCount:       10,                // 10个工作协程
+		BufferPoolSize:    1000,              // 1000个缓冲区
+		ConnectionPool:    5,                 // 5个连接
+		RetryAttempts:     3,                 // 重试3次
+		RetryDelay:        time.Second,       // 1秒重试延迟
+	}
+}
 
 // RealDubboClient 简化的真实Dubbo客户端实现
 type RealDubboClient struct {
-	config    *DubboConfig
-	connected bool
-	conn      net.Conn
+	config              *DubboConfig
+	optimizedConfig     *OptimizedDubboConfig
+	connected           bool
+	conn                net.Conn
+	chunkedTransferMgr  *ChunkedTransferManager
+	streamProcessor     *StreamProcessor
+	memoryManager       *MemoryManager
+	asyncProcessor      *AsyncProcessor
 }
 
 
@@ -35,8 +495,35 @@ func NewRealDubboClient(cfg *DubboConfig) (*RealDubboClient, error) {
 		cfg.Timeout = 3 * time.Second
 	}
 
+	// 创建优化配置
+	optimizedConfig := NewOptimizedDubboConfig(cfg)
+
+	// 创建分块传输管理器
+	chunkedMgr := NewChunkedTransferManager(
+		optimizedConfig.ChunkSize,
+		optimizedConfig.MaxChunks,
+		cfg.Timeout * 3, // 传输超时时间
+		true,  // 启用压缩
+	)
+
+	// 创建流式处理器
+	streamProcessor := NewStreamProcessor(optimizedConfig.ChunkSize)
+	streamProcessor.StartProcessing()
+
+	// 创建内存管理器
+	memoryManager := NewMemoryManager(optimizedConfig.BufferPoolSize)
+
+	// 创建异步处理器
+	asyncProcessor := NewAsyncProcessor(optimizedConfig.WorkerCount)
+	asyncProcessor.Start()
+
 	realClient := &RealDubboClient{
-		config: cfg,
+		config:             cfg,
+		optimizedConfig:    optimizedConfig,
+		chunkedTransferMgr: chunkedMgr,
+		streamProcessor:    streamProcessor,
+		memoryManager:      memoryManager,
+		asyncProcessor:     asyncProcessor,
 	}
 
 	// 尝试连接到注册中心
@@ -204,90 +691,14 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	initialTimeout := time.Duration(10 * time.Second)
 	c.conn.SetReadDeadline(time.Now().Add(initialTimeout))
 	
-	// 读取响应 - 使用动态缓冲区读取完整数据
-	var responseBuffer bytes.Buffer
-	buffer := make([]byte, 8192)
-	consecutiveSmallReads := 0
-
-	totalReadTime := time.Duration(0)
-	maxReadAttempts := 50 // 进一步增加最大读取尝试次数，确保大数据量的完整读取
-	
-	for readAttempts := 0; readAttempts < maxReadAttempts; readAttempts++ {
-		readStart := time.Now()
-		n, err := c.conn.Read(buffer)
-		readDuration := time.Since(readStart)
-		totalReadTime += readDuration
-		
-		if err != nil {
-			// 如果是超时错误，检查是否已经读取了完整数据
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// 如果已经读取了一些数据，检查数据完整性
-				if responseBuffer.Len() > 0 {
-					// 检查是否包含完整的JSON或dubbo结束标志
-					responseStr := responseBuffer.String()
-					fmt.Printf("[DUBBO CLIENT] 超时时已读取数据: %s\n", responseStr)
-					if c.isResponseComplete(responseStr) {
-						fmt.Printf("[DUBBO CLIENT] 响应完整，退出读取循环\n")
-						break
-					}
-				}
-				return nil, fmt.Errorf("调用超时: %s.%s 在规定时间内未返回响应", serviceName, methodName)
-			}
-			// 其他错误，如果已经读取了数据，继续处理
-			if responseBuffer.Len() > 0 {
-				responseStr := responseBuffer.String()
-				fmt.Printf("[DUBBO CLIENT] 错误时已读取数据: %s\n", responseStr)
-				if c.isResponseComplete(responseStr) {
-					fmt.Printf("[DUBBO CLIENT] 响应完整，退出读取循环\n")
-					break
-				}
-			}
-			return nil, fmt.Errorf("读取响应失败: %v", err)
-		}
-		
-		// 将读取的数据写入缓冲区
-		responseBuffer.Write(buffer[:n])
-		fmt.Printf("[DUBBO CLIENT] 读取到%d字节数据\n", n)
-		
-		// 改进的数据完整性检查：
-		// 1. 如果读取的字节数小于缓冲区大小，可能已经读完
-		if n < len(buffer) {
-			consecutiveSmallReads++
-			// 检查当前数据是否完整
-			responseStr := responseBuffer.String()
-			fmt.Printf("[DUBBO CLIENT] 当前响应数据: %s\n", responseStr)
-			if c.isResponseComplete(responseStr) {
-				fmt.Printf("[DUBBO CLIENT] 响应完整，退出读取循环\n")
-				break
-			}
-			// 增加连续小读取的容忍度，从3次增加到6次，确保不会过早退出
-			if consecutiveSmallReads >= 6 {
-				fmt.Printf("[DUBBO CLIENT] 连续小读取达到6次，退出读取循环\n")
-				break
-			}
-			// 设置较短的超时等待可能的后续数据
-			c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		} else {
-			consecutiveSmallReads = 0
-			// 数据还在持续传输，保持原有超时
-			c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		}
-		
-		// 检查是否包含dubbo命令结束标志
-		responseStr := responseBuffer.String()
-		if strings.Contains(responseStr, "dubbo>") && 
-		   (strings.Contains(responseStr, "elapsed:") || strings.Contains(responseStr, "ms.")) {
-			// 包含dubbo命令结束标志，数据传输完成
-			fmt.Printf("[DUBBO CLIENT] 检测到dubbo结束标志，退出读取循环\n")
-			break
-		}
-		
-		// 防止无限读取，如果总读取时间超过配置超时的5倍，强制退出
-		if totalReadTime > c.config.Timeout*5 {
-			fmt.Printf("[DUBBO CLIENT] 总读取时间超限，退出读取循环\n")
-			break
-		}
+	// 使用分块传输管理器读取响应数据
+	responseData, err := c.chunkedTransferMgr.ReadChunkedData(c.conn)
+	if err != nil {
+		return nil, fmt.Errorf("分块读取响应失败: %v", err)
 	}
+
+	// 将字节数据转换为字符串
+	responseBuffer := bytes.NewBuffer(responseData)
 
 	// 重置读取超时
 	c.conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
@@ -320,13 +731,18 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	fmt.Printf("[DUBBO CLIENT] 清理后的响应: %s\n", cleanedResponse)
 	
 	// 检查清理后的响应是否仍然包含dubbo控制台输出
-	// 如果清理后的响应包含"elapsed:"或"dubbo>"，说明没有获得有效的业务响应
-	// 但是"null"是有效的业务响应
+	// 如果清理后的响应包含"elapsed:"或"dubbo>"，说明可能没有获得有效的业务响应
+	// 但是"null"和有效的JSON（包括数组）都是有效的业务响应
 	if cleanedResponse != "null" && 
 	   (strings.Contains(cleanedResponse, "elapsed:") || 
-	    strings.Contains(cleanedResponse, "dubbo>") ||
-	    (strings.HasPrefix(cleanedResponse, "[]") && strings.Contains(cleanedResponse, "elapsed:"))) {
-		return nil, fmt.Errorf("调用失败，未获得有效响应: %s", cleanedResponse)
+	    strings.Contains(cleanedResponse, "dubbo>")) {
+		// 进一步检查：如果是有效的JSON，则认为是有效响应
+		var jsonTest interface{}
+		if json.Unmarshal([]byte(cleanedResponse), &jsonTest) != nil {
+			// 不是有效的JSON且包含控制台输出，认为是无效响应
+			return nil, fmt.Errorf("调用失败，未获得有效响应: %s", cleanedResponse)
+		}
+		// 如果是有效的JSON，继续执行，认为是有效响应
 	}
 	
 	// 返回清理后的响应
@@ -487,11 +903,22 @@ func (c *RealDubboClient) getDefaultMethods(serviceName string) []string {
 
 // Close 关闭客户端
 func (c *RealDubboClient) Close() error {
+	// 停止异步处理器
+	if c.asyncProcessor != nil {
+		c.asyncProcessor.Stop()
+	}
+	
+	// 停止流式处理器
+	if c.streamProcessor != nil {
+		c.streamProcessor.Stop()
+	}
+	
+	// 关闭网络连接
 	if c.conn != nil {
 		c.conn.Close()
-		c.conn = nil
+		c.connected = false
 	}
-	c.connected = false
+	
 	fmt.Println("真实Dubbo客户端已关闭")
 	return nil
 }
@@ -629,14 +1056,27 @@ func (c *RealDubboClient) formatArrayParameter(arr []interface{}) (string, error
 
 // cleanResponse 清理dubbo响应文本，提取JSON部分
 func (c *RealDubboClient) cleanResponse(responseText string) string {
-	// 特殊处理null响应
+	// 特殊处理包含dubbo>的响应
 	if strings.Contains(responseText, "dubbo>") {
 		// 提取dubbo>之前的内容
 		parts := strings.Split(responseText, "dubbo>")
 		if len(parts) > 0 {
 			content := strings.TrimSpace(parts[0])
+			// 移除末尾的elapsed信息
+			if strings.Contains(content, "elapsed:") {
+				elapsedParts := strings.Split(content, "elapsed:")
+				if len(elapsedParts) > 0 {
+					content = strings.TrimSpace(elapsedParts[0])
+				}
+			}
+			// 如果是null或有效JSON，直接返回
 			if content == "null" {
 				return "null"
+			}
+			// 检查是否为有效JSON
+			var jsonTest interface{}
+			if json.Unmarshal([]byte(content), &jsonTest) == nil {
+				return content
 			}
 		}
 	}
@@ -878,60 +1318,126 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 	return longestJSON
 }
 
-// isResponseComplete 检查响应是否完整
+// ResponseCompletionDetector 响应完整性检测器
+type ResponseCompletionDetector struct {
+	protocolMarkers []string
+	errorMarkers    []string
+}
+
+// NewResponseCompletionDetector 创建响应完整性检测器
+func NewResponseCompletionDetector() *ResponseCompletionDetector {
+	return &ResponseCompletionDetector{
+		protocolMarkers: []string{
+			"dubbo>",           // Dubbo命令行结束标志
+			"elapsed:",         // 执行时间标志
+			"ms.",              // 毫秒标志
+			"result:",          // 结果标志
+		},
+		errorMarkers: []string{
+			"Failed to invoke",
+			"No such service",
+			"No provider",
+			"Connection refused",
+			"Timeout",
+			"Exception",
+		},
+	}
+}
+
+// isResponseComplete 检查响应是否完整 - 重构版本
 func (c *RealDubboClient) isResponseComplete(responseText string) bool {
-	// 1. 检查是否包含dubbo命令结束标志
+	detector := NewResponseCompletionDetector()
+	
+	// 1. 检查协议标识符完整性
+	if detector.hasProtocolCompletion(responseText) {
+		return true
+	}
+	
+	// 2. 检查JSON结构完整性
+	if detector.hasValidJSONStructure(responseText) {
+		return true
+	}
+	
+	// 3. 检查错误响应完整性
+	if detector.hasErrorCompletion(responseText) {
+		return true
+	}
+	
+	// 4. 检查特殊响应（如null）
+	if detector.hasSpecialResponseCompletion(responseText) {
+		return true
+	}
+	
+	return false
+}
+
+// hasProtocolCompletion 检查协议标识符完整性
+func (d *ResponseCompletionDetector) hasProtocolCompletion(responseText string) bool {
+	// Dubbo命令行结束标志 + 执行时间标志
 	if strings.Contains(responseText, "dubbo>") && 
 	   (strings.Contains(responseText, "elapsed:") || strings.Contains(responseText, "ms.")) {
 		return true
 	}
-	
-	// 1.5. 特殊处理null响应：如果响应只包含"null"和"dubbo>"，认为是完整的null响应
-	if strings.Contains(responseText, "dubbo>") && 
-	   (strings.TrimSpace(strings.Replace(responseText, "dubbo>", "", -1)) == "null") {
-		return true
+	return false
+}
+
+// hasValidJSONStructure 检查JSON结构完整性
+func (d *ResponseCompletionDetector) hasValidJSONStructure(responseText string) bool {
+	// 提取可能的JSON内容
+	jsonContent := d.extractPotentialJSON(responseText)
+	if jsonContent == "" {
+		return false
 	}
 	
-	// 2. 尝试提取JSON，如果能提取到完整的JSON，认为响应完整
-	jsonResult := c.extractLargestJSON(responseText)
-	if jsonResult != "" { // 移除长度限制，任何有效JSON都应该被接受
-		// 验证JSON是否完整（能够成功解析），使用json.Number保持精度
-		decoder := json.NewDecoder(strings.NewReader(jsonResult))
-		decoder.UseNumber()
-		var jsonTest interface{}
-		if decoder.Decode(&jsonTest) == nil {
-			return true
+	// 验证JSON结构完整性
+	return d.validateJSONCompleteness(jsonContent)
+}
+
+// extractPotentialJSON 提取潜在的JSON内容
+func (d *ResponseCompletionDetector) extractPotentialJSON(responseText string) string {
+	// 查找JSON数组
+	if startIdx := strings.Index(responseText, "["); startIdx != -1 {
+		if endIdx := strings.LastIndex(responseText, "]"); endIdx > startIdx {
+			return responseText[startIdx : endIdx+1]
 		}
 	}
 	
-	// 3. 检查是否包含明显的错误信息（这些通常是完整的）
-	if strings.Contains(responseText, "Failed to invoke") || 
-	   strings.Contains(responseText, "No such service") ||
-	   strings.Contains(responseText, "No provider") {
-		return true
-	}
-	
-	// 4. 检查是否包含完整的JSON数组（特别是对于List类型返回）
-	if strings.HasPrefix(responseText, "[") && strings.HasSuffix(responseText, "]") {
-		// 尝试解析整个响应为JSON数组，使用json.Number保持精度
-		decoder := json.NewDecoder(strings.NewReader(responseText))
-		decoder.UseNumber()
-		var jsonArray []interface{}
-		if decoder.Decode(&jsonArray) == nil {
-			return true
+	// 查找JSON对象
+	if startIdx := strings.Index(responseText, "{"); startIdx != -1 {
+		if endIdx := strings.LastIndex(responseText, "}"); endIdx > startIdx {
+			return responseText[startIdx : endIdx+1]
 		}
 	}
 	
-	// 5. 检查是否包含完整的JSON对象
-	if strings.HasPrefix(responseText, "{") && strings.HasSuffix(responseText, "}") {
-		// 尝试解析整个响应为JSON对象，使用json.Number保持精度
-		decoder := json.NewDecoder(strings.NewReader(responseText))
-		decoder.UseNumber()
-		var jsonObj map[string]interface{}
-		if decoder.Decode(&jsonObj) == nil {
+	return ""
+}
+
+// validateJSONCompleteness 验证JSON完整性
+func (d *ResponseCompletionDetector) validateJSONCompleteness(jsonContent string) bool {
+	decoder := json.NewDecoder(strings.NewReader(jsonContent))
+	decoder.UseNumber()
+	var jsonTest interface{}
+	return decoder.Decode(&jsonTest) == nil
+}
+
+// hasErrorCompletion 检查错误响应完整性
+func (d *ResponseCompletionDetector) hasErrorCompletion(responseText string) bool {
+	for _, marker := range d.errorMarkers {
+		if strings.Contains(responseText, marker) {
 			return true
 		}
 	}
-	
+	return false
+}
+
+// hasSpecialResponseCompletion 检查特殊响应完整性
+func (d *ResponseCompletionDetector) hasSpecialResponseCompletion(responseText string) bool {
+	// null响应
+	if strings.Contains(responseText, "dubbo>") {
+		cleanedResponse := strings.TrimSpace(strings.Replace(responseText, "dubbo>", "", -1))
+		if cleanedResponse == "null" || cleanedResponse == "" {
+			return true
+		}
+	}
 	return false
 }
