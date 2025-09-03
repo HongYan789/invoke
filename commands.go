@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/fatih/color"
 	"gopkg.in/yaml.v3"
 )
 
@@ -111,9 +111,8 @@ func runInvokeCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("调用失败: %v", err)
 	}
 
-	// 使用List结果处理器处理返回结果，传递参数信息
-	listHandler := NewListResultHandler()
-	processedResult := listHandler.HandleListResult(result, methodName, parsedParams)
+	// 直接使用原始结果，不进行额外的数据包装处理
+		processedResult := result
 
 	// 输出结果
 	color.Green("调用成功:")
@@ -272,10 +271,13 @@ func parseParams(params []string, types []string) ([]interface{}, error) {
 	result := make([]interface{}, len(params))
 
 	for i, param := range params {
-		// 尝试解析为JSON
+		// 尝试解析为JSON，使用json.Number保持精度
+		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder.UseNumber()
 		var jsonValue interface{}
-		if err := json.Unmarshal([]byte(param), &jsonValue); err == nil {
-			result[i] = jsonValue
+		if err := decoder.Decode(&jsonValue); err == nil {
+			// 转换json.Number以保持精度
+			result[i] = convertJSONNumber(jsonValue)
 			continue
 		}
 
@@ -301,26 +303,47 @@ func parseByType(param, paramType string) (interface{}, error) {
 	case "java.lang.String", "string":
 		return param, nil
 	case "java.lang.Integer", "int":
-		var value int
-		err := json.Unmarshal([]byte(param), &value)
-		return value, err
+		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder.UseNumber()
+		var value json.Number
+		err := decoder.Decode(&value)
+		if err != nil {
+			return nil, err
+		}
+		return convertJSONNumber(value), nil
 	case "java.lang.Long", "long":
-		var value int64
-		err := json.Unmarshal([]byte(param), &value)
-		return value, err
+		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder.UseNumber()
+		var value json.Number
+		err := decoder.Decode(&value)
+		if err != nil {
+			return nil, err
+		}
+		return convertJSONNumber(value), nil
 	case "java.lang.Boolean", "boolean":
+		// 使用json.Number保持精度
+		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder.UseNumber()
 		var value bool
-		err := json.Unmarshal([]byte(param), &value)
+		err := decoder.Decode(&value)
 		return value, err
 	case "java.lang.Double", "double":
+		// 使用json.Number保持精度
+		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder.UseNumber()
 		var value float64
-		err := json.Unmarshal([]byte(param), &value)
+		err := decoder.Decode(&value)
 		return value, err
 	default:
-		// 尝试解析为JSON对象
+		// 尝试解析为JSON对象，使用json.Number保持精度
+		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder.UseNumber()
 		var value interface{}
-		err := json.Unmarshal([]byte(param), &value)
-		return value, err
+		err := decoder.Decode(&value)
+		if err != nil {
+			return nil, err
+		}
+		return convertJSONNumber(value), nil
 	}
 }
 
@@ -328,12 +351,12 @@ func parseByType(param, paramType string) (interface{}, error) {
 func generateExampleParams(types []string) []string {
 	color.Blue("[EXAMPLE] 开始生成示例参数，类型数量: %d", len(types))
 	color.Cyan("[EXAMPLE] 输入类型列表: %v", types)
-	
+
 	examples := make([]string, len(types))
 
 	for i, paramType := range types {
 		color.Cyan("[EXAMPLE] 处理第%d个参数，类型: %s", i+1, paramType)
-		
+
 		switch paramType {
 		case "java.lang.String", "string":
 			examples[i] = `"example"`

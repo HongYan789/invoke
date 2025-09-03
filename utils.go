@@ -148,12 +148,15 @@ func (ti *TypeInferrer) ParseParameterValue(value string, paramType ParameterTyp
 		}
 		return value, nil // 如果解析失败，返回原始字符串
 	case TypeArray, TypeMap, TypeObject:
-		// 尝试解析JSON
+		// 尝试解析JSON，使用json.Number保持精度
+		decoder := json.NewDecoder(strings.NewReader(value))
+		decoder.UseNumber()
 		var result interface{}
-		if err := json.Unmarshal([]byte(value), &result); err != nil {
+		if err := decoder.Decode(&result); err != nil {
 			return nil, fmt.Errorf("无效的JSON格式: %v", err)
 		}
-		return result, nil
+		// 转换json.Number以保持精度
+		return convertJSONNumber(result), nil
 	default:
 		return value, nil
 	}

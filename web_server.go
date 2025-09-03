@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -125,12 +126,12 @@ func (ws *WebServer) Start() error {
 	http.HandleFunc("/api/example", ws.handleExample)
 	http.HandleFunc("/api/history", ws.handleHistory)
 	http.HandleFunc("/api/clear-history", ws.handleClearHistory)
+
+	// 添加静态文件服务
+	http.Handle("/test_download.html", http.HandlerFunc(ws.handleStaticFile))
 	
-	// 数据完整性解决方案API端点
 	// enhanceWebServerWithCompleteData(ws)
-	
-	// List结果处理增强API端点
-	enhanceWebServerWithListHandling(ws)
+	http.HandleFunc("/api/test-precision", ws.handleTestPrecision)
 
 	addr := fmt.Sprintf(":%d", ws.port)
 	color.Green("🚀 Web UI服务器启动成功!")
@@ -138,7 +139,6 @@ func (ws *WebServer) Start() error {
 	color.Yellow("⚙️  默认注册中心: %s", ws.registry)
 	color.Yellow("📦 默认应用名: %s", ws.app)
 	color.Green("✨ 数据完整性增强: 已启用")
-	color.Green("✨ List结果处理增强: 已启用")
 	fmt.Println()
 
 	return http.ListenAndServe(addr, nil)
@@ -293,9 +293,8 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 	// 获取查询参数
 	registry := r.URL.Query().Get("registry")
 	app := r.URL.Query().Get("app")
-	timeout := r.URL.Query().Get("timeout")
 
-	color.Yellow("[DEBUG] 服务列表请求 - 注册中心: %s, 应用: %s, 超时: %s", registry, app, timeout)
+	
 
 	if registry == "" {
 		registry = ws.registry
@@ -519,27 +518,28 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 		return nil, fmt.Errorf("真实调用失败: %v", err)
 	}
 	color.Green("[WEB] 真实调用成功")
+	
 
 	// 检查result是否为JSON字符串，如果是则解析为对象
 	if resultStr, ok := result.(string); ok {
-		// 尝试解析JSON字符串为对象
+		// 尝试解析JSON字符串为对象，使用UseNumber()保持大整数精度
 		var parsedResult interface{}
-		if err := json.Unmarshal([]byte(resultStr), &parsedResult); err == nil {
+		decoder := json.NewDecoder(strings.NewReader(resultStr))
+		decoder.UseNumber()
+		if err := decoder.Decode(&parsedResult); err == nil {
 			color.Green("[WEB] JSON字符串解析成功，返回解析后的对象")
-			result = parsedResult
+			
+			// 转换json.Number为适当的类型
+			result = convertJSONNumber(parsedResult)
+	
 		} else {
 			color.Yellow("[WEB] JSON解析失败，返回原始字符串: %v", err)
 		}
 	}
 
-	// 数据增强处理（如果需要）
-	color.Blue("[WEB] 开始数据增强处理，原始数据类型: %T", result)
-	// manager := NewCompanyDataManager()
-		// 使用List结果处理器处理返回结果
-	listHandler := NewListResultHandler()
-	finalResult := listHandler.HandleListResult(result, req.MethodName, params)
-	color.Green("[WEB] List结果处理器处理完成，最终返回类型: %T", finalResult)
-	return finalResult, nil
+	// 直接返回原始结果，不进行额外的数据包装处理
+	color.Green("[WEB] 返回原始结果，数据类型: %T", result)
+	return result, nil
 }
 
 // buildDubboInvokeCommand 构建dubbo invoke命令，用于调试和验证
@@ -612,7 +612,7 @@ func (ws *WebServer) handleClearHistory(w http.ResponseWriter, r *http.Request) 
 
 // handleMethods 处理获取服务方法列表
 func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
-	color.Cyan("[DEBUG] 收到获取方法列表请求")
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -620,7 +620,7 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 
 	// 处理OPTIONS预检请求
 	if r.Method == "OPTIONS" {
-		color.Yellow("[DEBUG] 处理OPTIONS预检请求")
+
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -639,14 +639,14 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	color.Green("[DEBUG] 获取服务方法列表: %s", serviceName)
+
 
 	// 使用默认值
 	registry := ws.registry
 	app := ws.app
 	timeout := ws.timeout
 
-	color.Cyan("[DEBUG] 使用配置 - 注册中心: %s, 应用名: %s, 超时: %d", registry, app, timeout)
+
 
 	// 创建Dubbo客户端配置
 	config := &DubboConfig{
@@ -666,7 +666,7 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	color.Green("[DEBUG] Dubbo客户端创建成功")
+
 
 	// 检查连接状态
 	if !client.IsConnected() {
@@ -679,7 +679,7 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	color.Green("[DEBUG] Dubbo客户端连接正常")
+
 
 	// 获取方法列表
 	methods, err := client.ListMethods(serviceName)
@@ -693,7 +693,7 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	color.Green("[DEBUG] 成功获取方法列表，共 %d 个方法", len(methods))
+
 
 	response := ListMethodsResponse{
 		Success: true,
@@ -718,8 +718,21 @@ func convertJSONNumbers(params []interface{}) []interface{} {
 func convertJSONNumber(value interface{}) interface{} {
 	switch v := value.(type) {
 	case json.Number:
+		// 检查是否为大整数（超过JavaScript安全整数范围或超过15位数字）
+		numStr := string(v)
+
+		if len(numStr) > 15 {
+			// 超过15位数字，直接返回字符串避免精度丢失
+
+			return numStr
+		}
+		
 		// 尝试转换为int64
 		if intVal, err := v.Int64(); err == nil {
+			// 检查是否超过JavaScript安全整数范围
+			if intVal > 9007199254740991 || intVal < -9007199254740991 {
+				return numStr // 返回字符串避免精度丢失
+			}
 			return intVal
 		}
 		// 如果无法转换为int64，尝试转换为float64
@@ -727,7 +740,7 @@ func convertJSONNumber(value interface{}) interface{} {
 			return floatVal
 		}
 		// 如果都失败，返回原始字符串
-		return string(v)
+		return numStr
 	case []interface{}:
 		result := make([]interface{}, len(v))
 		for i, item := range v {
@@ -755,7 +768,26 @@ func safeCopyParameters(params []interface{}) []interface{} {
 
 // safeCopyValue 安全复制单个值，处理大整数精度问题
 func safeCopyValue(value interface{}) interface{} {
+	
 	switch v := value.(type) {
+	case json.Number:
+		// 优先处理json.Number类型，保持原始精度
+		numStr := string(v)
+		// 尝试解析为整数
+		if intVal, err := v.Int64(); err == nil {
+			// 检查是否超过JavaScript安全整数范围或大于15位
+			if intVal > 9007199254740991 || intVal < -9007199254740991 || 
+			   intVal >= 1000000000000000 || intVal <= -1000000000000000 {
+				return numStr // 返回原始字符串保持精度
+			}
+			return intVal
+		}
+		// 如果不是整数，尝试解析为浮点数
+		if floatVal, err := v.Float64(); err == nil {
+			return floatVal
+		}
+		// 如果都解析失败，返回原始字符串
+		return numStr
 	case float64:
 		// 检查是否为整数且超过JavaScript安全整数范围
 		if v == float64(int64(v)) && (v > 9007199254740991 || v < -9007199254740991) {
@@ -810,6 +842,41 @@ func (ws *WebServer) writeError(w http.ResponseWriter, message string) {
 		Error:   message,
 	}
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleTestPrecision 测试精度处理的接口
+func (ws *WebServer) handleTestPrecision(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	// 创建包含大整数的测试数据
+	testData := map[string]interface{}{
+		"largeInt1": json.Number("1954894705928892456"),
+		"largeInt2": json.Number("9223372036854775807"),
+		"normalInt": json.Number("12345"),
+		"floatValue": json.Number("123.456"),
+		"stringValue": "test string",
+		"nestedData": map[string]interface{}{
+			"innerLargeInt": json.Number("1954894705928892456"),
+			"innerArray": []interface{}{
+				json.Number("1954894705928892456"),
+				json.Number("123"),
+				"string in array",
+			},
+		},
+	}
+	
+	// 使用safeCopyValue处理数据
+	processedData := safeCopyValue(testData)
+	
+	response := InvokeResponse{
+		Success: true,
+		Data:    processedData,
+		Message: "精度测试数据",
+	}
+	
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	encoder.Encode(response)
 }
 
 // indexHTML 首页HTML模板
@@ -1864,3 +1931,23 @@ const indexHTML = `<!DOCTYPE html>
     </script>
 </body>
 </html>`
+
+func (ws *WebServer) handleStaticFile(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != "GET" {
+		ws.writeError(w, "只支持GET方法")
+		return
+	}
+
+	// 读取test_download.html文件
+	filePath := "./test_download.html"
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Write(content)
+}
