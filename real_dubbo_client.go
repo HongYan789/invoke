@@ -688,17 +688,44 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	}
 
 	// 增加初始读取超时，给服务端更多时间响应
-	initialTimeout := time.Duration(10 * time.Second)
+	initialTimeout := time.Duration(30 * time.Second)
 	c.conn.SetReadDeadline(time.Now().Add(initialTimeout))
 	
-	// 使用分块传输管理器读取响应数据
-	responseData, err := c.chunkedTransferMgr.ReadChunkedData(c.conn)
-	if err != nil {
-		return nil, fmt.Errorf("分块读取响应失败: %v", err)
+	// 使用传统方式读取完整响应数据，避免分块限制导致数据截断
+	var responseBuffer bytes.Buffer
+	tempBuffer := make([]byte, 4096)
+	
+	for {
+		n, err := c.conn.Read(tempBuffer)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				if responseBuffer.Len() > 0 {
+					break // 已读取数据，超时退出
+				}
+				return nil, fmt.Errorf("读取响应超时: %v", err)
+			}
+			if responseBuffer.Len() > 0 {
+				break // 已读取数据，连接关闭或其他错误退出
+			}
+			return nil, fmt.Errorf("读取响应失败: %v", err)
+		}
+		
+		if n == 0 {
+			break
+		}
+		
+		responseBuffer.Write(tempBuffer[:n])
+		
+		// 检查是否读取完整（包含dubbo>提示符或其他结束标识）
+		responseText := responseBuffer.String()
+		if strings.Contains(responseText, "dubbo>") || 
+		   strings.Contains(responseText, "elapsed:") {
+			break
+		}
+		
+		// 设置较短的读取超时，避免无限等待
+		c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	}
-
-	// 将字节数据转换为字符串
-	responseBuffer := bytes.NewBuffer(responseData)
 
 	// 重置读取超时
 	c.conn.SetReadDeadline(time.Now().Add(c.config.Timeout))

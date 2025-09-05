@@ -129,7 +129,7 @@ func (ws *WebServer) Start() error {
 
 	// 添加静态文件服务
 	http.Handle("/test_download.html", http.HandlerFunc(ws.handleStaticFile))
-	
+
 	// enhanceWebServerWithCompleteData(ws)
 	http.HandleFunc("/api/test-precision", ws.handleTestPrecision)
 
@@ -253,7 +253,7 @@ func (ws *WebServer) handleInvoke(w http.ResponseWriter, r *http.Request) {
 	var resultBuffer bytes.Buffer
 	encoder := json.NewEncoder(&resultBuffer)
 	encoder.SetEscapeHTML(false)
-	
+
 	if jsonErr := encoder.Encode(safeResult); jsonErr == nil {
 		// 去除末尾的换行符
 		resultStr := strings.TrimSuffix(resultBuffer.String(), "\n")
@@ -290,11 +290,29 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// 获取查询参数
-	registry := r.URL.Query().Get("registry")
-	app := r.URL.Query().Get("app")
-
-	
+	// 处理POST请求的JSON数据
+	var registry, app string
+	if r.Method == "POST" {
+		var requestData struct {
+			Registry string `json:"registry"`
+			App      string `json:"app"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			color.Red("[WEB] 解析请求数据失败: %v", err)
+			response := ListServicesResponse{
+				Success: false,
+				Error:   fmt.Sprintf("解析请求数据失败: %v", err),
+			}
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		registry = requestData.Registry
+		app = requestData.App
+	} else {
+		// 处理GET请求的查询参数
+		registry = r.URL.Query().Get("registry")
+		app = r.URL.Query().Get("app")
+	}
 
 	if registry == "" {
 		registry = ws.registry
@@ -489,7 +507,7 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 			color.Red("[WEB] 参数解析失败: %v", err)
 			return nil, fmt.Errorf("参数解析失败: %v", err)
 		}
-		
+
 		// 将json.Number转换为适当的类型
 		params = convertJSONNumbers(paramArray)
 		color.Green("[WEB] 解析参数完成，参数数量: %d", len(params))
@@ -518,7 +536,6 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 		return nil, fmt.Errorf("真实调用失败: %v", err)
 	}
 	color.Green("[WEB] 真实调用成功")
-	
 
 	// 检查result是否为JSON字符串，如果是则解析为对象
 	if resultStr, ok := result.(string); ok {
@@ -528,10 +545,10 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 		decoder.UseNumber()
 		if err := decoder.Decode(&parsedResult); err == nil {
 			color.Green("[WEB] JSON字符串解析成功，返回解析后的对象")
-			
+
 			// 转换json.Number为适当的类型
 			result = convertJSONNumber(parsedResult)
-	
+
 		} else {
 			color.Yellow("[WEB] JSON解析失败，返回原始字符串: %v", err)
 		}
@@ -546,7 +563,7 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 func (ws *WebServer) buildDubboInvokeCommand(serviceName, methodName string, params []interface{}) string {
 	// 创建临时客户端用于格式化参数
 	tempClient := &RealDubboClient{}
-	
+
 	// 格式化参数
 	paramStr, err := tempClient.formatParameters(params)
 	if err != nil {
@@ -557,7 +574,7 @@ func (ws *WebServer) buildDubboInvokeCommand(serviceName, methodName string, par
 		}
 		paramStr = strings.Join(simpleParams, ", ")
 	}
-	
+
 	return fmt.Sprintf("invoke %s.%s(%s)", serviceName, methodName, paramStr)
 }
 
@@ -639,14 +656,10 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
-
 	// 使用默认值
 	registry := ws.registry
 	app := ws.app
 	timeout := ws.timeout
-
-
 
 	// 创建Dubbo客户端配置
 	config := &DubboConfig{
@@ -666,8 +679,6 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
-
 	// 检查连接状态
 	if !client.IsConnected() {
 		color.Red("[ERROR] Dubbo客户端连接失败")
@@ -678,8 +689,6 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(response)
 		return
 	}
-
-
 
 	// 获取方法列表
 	methods, err := client.ListMethods(serviceName)
@@ -692,8 +701,6 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(response)
 		return
 	}
-
-
 
 	response := ListMethodsResponse{
 		Success: true,
@@ -726,7 +733,7 @@ func convertJSONNumber(value interface{}) interface{} {
 
 			return numStr
 		}
-		
+
 		// 尝试转换为int64
 		if intVal, err := v.Int64(); err == nil {
 			// 检查是否超过JavaScript安全整数范围
@@ -768,7 +775,7 @@ func safeCopyParameters(params []interface{}) []interface{} {
 
 // safeCopyValue 安全复制单个值，处理大整数精度问题
 func safeCopyValue(value interface{}) interface{} {
-	
+
 	switch v := value.(type) {
 	case json.Number:
 		// 优先处理json.Number类型，保持原始精度
@@ -776,8 +783,8 @@ func safeCopyValue(value interface{}) interface{} {
 		// 尝试解析为整数
 		if intVal, err := v.Int64(); err == nil {
 			// 检查是否超过JavaScript安全整数范围或大于15位
-			if intVal > 9007199254740991 || intVal < -9007199254740991 || 
-			   intVal >= 1000000000000000 || intVal <= -1000000000000000 {
+			if intVal > 9007199254740991 || intVal < -9007199254740991 ||
+				intVal >= 1000000000000000 || intVal <= -1000000000000000 {
 				return numStr // 返回原始字符串保持精度
 			}
 			return intVal
@@ -847,13 +854,13 @@ func (ws *WebServer) writeError(w http.ResponseWriter, message string) {
 // handleTestPrecision 测试精度处理的接口
 func (ws *WebServer) handleTestPrecision(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	// 创建包含大整数的测试数据
 	testData := map[string]interface{}{
-		"largeInt1": json.Number("1954894705928892456"),
-		"largeInt2": json.Number("9223372036854775807"),
-		"normalInt": json.Number("12345"),
-		"floatValue": json.Number("123.456"),
+		"largeInt1":   json.Number("1954894705928892456"),
+		"largeInt2":   json.Number("9223372036854775807"),
+		"normalInt":   json.Number("12345"),
+		"floatValue":  json.Number("123.456"),
 		"stringValue": "test string",
 		"nestedData": map[string]interface{}{
 			"innerLargeInt": json.Number("1954894705928892456"),
@@ -864,16 +871,16 @@ func (ws *WebServer) handleTestPrecision(w http.ResponseWriter, r *http.Request)
 			},
 		},
 	}
-	
+
 	// 使用safeCopyValue处理数据
 	processedData := safeCopyValue(testData)
-	
+
 	response := InvokeResponse{
 		Success: true,
 		Data:    processedData,
 		Message: "精度测试数据",
 	}
-	
+
 	encoder := json.NewEncoder(w)
 	encoder.SetEscapeHTML(false)
 	encoder.Encode(response)
@@ -900,7 +907,7 @@ const indexHTML = `<!DOCTYPE html>
             border-radius: 12px;
             box-shadow: 0 0 10px rgba(0,0,0,0.05);
             overflow: hidden;
-            width: calc(100% - 40px);
+            width: 100%;
         }
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -923,41 +930,64 @@ const indexHTML = `<!DOCTYPE html>
         .top-row {
             display: flex;
             gap: 20px;
-            flex: 1;
+            flex: 0 0 auto;
+            height: 800px;
         }
         
         /* 左列：服务调用面板 */
         .left-column {
-            flex: 1;
+            flex: 0 0 50%;
+            width: 50%;
             display: flex;
             flex-direction: column;
         }
         /* 右列：可用服务和历史记录 */
         .right-column {
-            flex: 1;
+            flex: 0 0 50%;
+            width: 50%;
             display: flex;
             flex-direction: column;
             gap: 20px;
         }
         .service-call-panel { 
-            flex: 1;
+            flex: 0 0 auto;
+            height: 820px;
             min-height: 500px;
+            max-height: 820px;
         }
         .available-services-panel { 
-            flex: 1;
+            flex: 0 0 auto;
+            height: 400px;
             min-height: 300px;
+            max-height: 500px;
         }
         .history-panel { 
-            flex: 1;
+            flex: 0 0 auto;
+            height: 400px;
             min-height: 300px;
+            max-height: 500px;
             overflow: hidden;
             max-width: 100%;
             contain: layout;
+        }
+        .history-list {
+            flex: 1;
+            min-height: 150px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            border-radius: 3px;
+            background: white;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }
         /* 调用结果面板独立显示在底部 */
         .result-panel { 
             min-height: 200px;
             flex-shrink: 0;
+            margin-top: 20px;
+            width: 100%;
+            max-width: 100%;
         }
         .panel h2 { 
             color: #333; 
@@ -983,8 +1013,56 @@ const indexHTML = `<!DOCTYPE html>
         .history-panel h2::before {
             content: '📜'; /* 卷轴图标 - 调用历史 */
         }
+        .history-panel h2 {
+            justify-content: space-between;
+            flex-wrap: nowrap;
+            min-width: 0;
+        }
+        .history-panel h2 span {
+            flex-shrink: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-shrink: 0;
+            margin-left: 10px;
+        }
+        .icon-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 4px;
+            font-size: 16px;
+            transition: background-color 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .icon-btn:hover {
+            background-color: #f0f0f0;
+        }
+        .icon-btn.download:hover {
+            background-color: #e3f2fd;
+        }
+        .icon-btn.clear:hover {
+            background-color: #ffebee;
+        }
         .result-panel h2::before {
             content: '📊'; /* 图表图标 - 调用结果 */
+        }
+        .result-panel h2 {
+            justify-content: space-between;
+        }
+        .result-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
         }
         /* 表单样式调整 */
         .form-group {
@@ -1132,19 +1210,7 @@ const indexHTML = `<!DOCTYPE html>
             white-space: normal;
             word-wrap: break-word;
         }
-        .history-list {
-            overflow-y: auto;
-            overflow-x: hidden;
-            max-height: 280px;
-            scrollbar-width: thin;
-            scrollbar-color: #c1c1c1 #f1f1f1;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            max-width: 100%;
-            width: 100%;
-            min-width: 0;
-            flex-shrink: 1;
-        }
+
         .history-list::-webkit-scrollbar {
             width: 6px;
         }
@@ -1218,6 +1284,7 @@ const indexHTML = `<!DOCTYPE html>
                 flex: none;
                 margin-top: 0;
                 min-height: auto;
+                margin-top: 20px;
             }
             .header h1 { font-size: 2em; }
             .container { width: calc(100% - 20px); margin: 10px auto; }
@@ -1257,6 +1324,7 @@ const indexHTML = `<!DOCTYPE html>
                                 <label for="registry">注册中心:</label>
                                 <div style="display: flex; gap: 10px; align-items: center;">
                                     <input type="text" id="registry" value="{{.Registry}}" style="flex: 1;">
+                                    <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
                             <div class="form-row">
@@ -1283,6 +1351,7 @@ const indexHTML = `<!DOCTYPE html>
                                 <label for="registry">注册中心:</label>
                                 <div style="display: flex; gap: 10px; align-items: center;">
                                     <input type="text" id="registryExpr" value="{{.Registry}}" style="flex: 1;">
+                                    <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
                             <div class="form-group">
@@ -1297,7 +1366,7 @@ const indexHTML = `<!DOCTYPE html>
                         <div class="btn-group">
                             <button class="btn" onclick="invokeService()">🚀 调用服务</button>
                             <button class="btn btn-secondary" onclick="generateExample()">📝 生成示例</button>
-                            <button class="btn btn-success" onclick="loadServices()">📋 加载服务列表</button>
+                            <button class="btn btn-success" onclick="loadServices()" style="display: none;">📋 加载服务列表</button>
                         </div>
                     </div>
                 </div>
@@ -1314,15 +1383,21 @@ const indexHTML = `<!DOCTYPE html>
                     </div>
                     
                     <div class="panel history-panel">
-                        <h2>最近调用历史</h2>
+                        <h2>
+                            <span>最近调用历史</span>
+                            <div class="history-actions">
+                                <button class="icon-btn download" onclick="downloadHistory()" title="下载日志">
+                                    📥
+                                </button>
+                                <button class="icon-btn clear" onclick="clearHistory()" title="清空日志">
+                                    🗑️
+                                </button>
+                            </div>
+                        </h2>
                         <div id="historyList" class="service-list history-list">
                             <div style="padding: 20px; text-align: center; color: #6c757d;">
                                 <p>暂无调用历史</p>
                             </div>
-                        </div>
-                        <div class="btn-group">
-                            <button class="btn btn-secondary" onclick="downloadHistory()">下载日志</button>
-                            <button class="btn btn-secondary" onclick="clearHistory()" style="background: #dc3545;">清空日志</button>
                         </div>
                     </div>
                 </div>
@@ -1330,7 +1405,14 @@ const indexHTML = `<!DOCTYPE html>
             
             <!-- 调用结果面板独立显示在底部 -->
             <div class="panel result-panel">
-                <h2>调用结果</h2>
+                <h2>
+                    <span>调用结果</span>
+                    <div class="result-actions">
+                        <button class="icon-btn copy" onclick="copyResult()" title="复制结果">
+                            📋
+                        </button>
+                    </div>
+                </h2>
                 <div id="loading" class="loading">
                     <div class="spinner"></div>
                     正在调用服务...
@@ -1652,7 +1734,18 @@ const indexHTML = `<!DOCTYPE html>
                     timeInfo += ' (后端耗时: ' + data.duration + 'ms)';
                 }
                 
-                resultPanelTitle.innerHTML = '调用结果 - ' + statusText + timeInfo + statusIndicator;
+                // 保留复制按钮，只更新标题文本
+                const titleSpan = resultPanelTitle.querySelector('span');
+                if (titleSpan) {
+                    titleSpan.innerHTML = '调用结果 - ' + statusText + timeInfo + statusIndicator;
+                } else {
+                    // 如果没有找到span，创建一个并保留原有结构
+                    const actionsDiv = resultPanelTitle.querySelector('.result-actions');
+                    resultPanelTitle.innerHTML = '<span>调用结果 - ' + statusText + timeInfo + statusIndicator + '</span>';
+                    if (actionsDiv) {
+                        resultPanelTitle.appendChild(actionsDiv);
+                    }
+                }
             }
             
             // 调用后自动刷新历史（无论成功失败）
@@ -1915,7 +2008,19 @@ const indexHTML = `<!DOCTYPE html>
                             '<span style="color: #4caf50; margin-left: 8px;">●</span>' : 
                             '<span style="color: #f44336; margin-left: 8px;">●</span>';
                         const statusText = item.success ? '调用成功' : '调用失败';
-                        resultPanelTitle.innerHTML = '调用结果 - ' + statusText + statusIndicator;
+                        
+                        // 保留复制按钮，只更新标题文本
+                        const titleSpan = resultPanelTitle.querySelector('span');
+                        if (titleSpan) {
+                            titleSpan.innerHTML = '调用结果 - ' + statusText + statusIndicator;
+                        } else {
+                            // 如果没有找到span，创建一个并保留原有结构
+                            const actionsDiv = resultPanelTitle.querySelector('.result-actions');
+                            resultPanelTitle.innerHTML = '<span>调用结果 - ' + statusText + statusIndicator + '</span>';
+                            if (actionsDiv) {
+                                resultPanelTitle.appendChild(actionsDiv);
+                            }
+                        }
                     }
                 }
             }
@@ -1927,6 +2032,122 @@ const indexHTML = `<!DOCTYPE html>
             // 重新设置注册中心地址（因为toggleCallFormat可能会重置它）
             document.getElementById('registry').value = item.registry || '';
         }
+        
+        function copyResult() {
+            const resultElement = document.getElementById('result');
+            if (!resultElement || !resultElement.textContent.trim()) {
+                alert('暂无结果数据可复制');
+                return;
+            }
+            
+            // 创建临时文本区域用于复制
+            const textarea = document.createElement('textarea');
+            textarea.value = resultElement.textContent;
+            document.body.appendChild(textarea);
+            textarea.select();
+            
+            try {
+                document.execCommand('copy');
+                alert('结果已复制到剪贴板');
+            } catch (err) {
+                // 如果复制失败，提供下载选项
+                const blob = new Blob([resultElement.textContent], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'dubbo-invoke-result-' + new Date().toISOString().slice(0,19).replace(/:/g, '-') + '.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                alert('复制失败，已自动下载结果文件');
+            } finally {
+                document.body.removeChild(textarea);
+            }
+        }
+        
+        function testConnection() {
+            const registryInput = document.getElementById('registry') || document.getElementById('registryExpr');
+            if (!registryInput || !registryInput.value.trim()) {
+                showConnectionResult('请先输入注册中心地址', false);
+                return;
+            }
+
+            const registry = registryInput.value.trim();
+            const servicesList = document.getElementById('serviceList');
+            
+            // 找到所有测试连接按钮
+            const testButtons = document.querySelectorAll('button[onclick="testConnection()"]');
+            const originalTexts = [];
+            
+            // 显示测试中状态
+            testButtons.forEach((button, index) => {
+                originalTexts[index] = button.textContent;
+                button.textContent = '测试中...';
+                button.disabled = true;
+            });
+            
+            // 在服务列表中显示测试状态
+            servicesList.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;"><div style="display: inline-block; width: 20px; height: 20px; border: 2px solid #f3f3f3; border-top: 2px solid #4a90e2; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 10px;"></div>正在测试连接...</div>';
+            
+            fetch('/api/list', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    registry: registry,
+                    app: document.getElementById('app') ? document.getElementById('app').value : 'dubbo-invoke-cli'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const serviceCount = data.services ? data.services.length : 0;
+                    showConnectionResult('连接成功！发现 ' + serviceCount + ' 个服务', true);
+                    // 显示服务列表
+                    if (data.services && data.services.length > 0) {
+                        displayServices(data.services);
+                    }
+                } else {
+                    showConnectionResult('连接失败：' + (data.error || '未知错误'), false);
+                }
+            })
+            .catch(error => {
+                showConnectionResult('连接失败：' + error.message, false);
+            })
+            .finally(() => {
+                // 恢复按钮状态
+                testButtons.forEach((button, index) => {
+                    button.textContent = originalTexts[index];
+                    button.disabled = false;
+                });
+            });
+        }
+        
+        function showConnectionResult(message, isSuccess) {
+             const servicesList = document.getElementById('serviceList');
+             const iconColor = isSuccess ? '#4caf50' : '#f44336';
+             const icon = isSuccess ? '✅' : '❌';
+             const bgColor = isSuccess ? '#e8f5e8' : '#ffeaea';
+             const borderColor = isSuccess ? '#4caf50' : '#f44336';
+             
+             servicesList.innerHTML = 
+                 '<div style="' +
+                     'padding: 20px; ' +
+                     'text-align: center; ' +
+                     'background: ' + bgColor + '; ' +
+                     'border: 1px solid ' + borderColor + '; ' +
+                     'border-radius: 8px; ' +
+                     'margin: 10px 0;' +
+                     'color: ' + iconColor + ';' +
+                     'font-weight: 500;' +
+                 '">' +
+                     '<div style="font-size: 24px; margin-bottom: 8px;">' + icon + '</div>' +
+                     '<div>' + message + '</div>' +
+                 '</div>';
+         }
+        
         window.onload = function() { loadHistory(); };
     </script>
 </body>
