@@ -922,16 +922,17 @@ const indexHTML = `<!DOCTYPE html>
         .main-content { 
             display: flex; 
             flex-direction: column;
-            gap: 20px; 
-            padding: 20px;
+            gap: 10px; 
+            padding: 10px;
             min-height: calc(100vh - 200px);
         }
         
         .top-row {
             display: flex;
-            gap: 20px;
+            gap: 10px;
             flex: 0 0 auto;
             height: 800px;
+            margin: 0 10px;
         }
         
         /* 左列：服务调用面板 */
@@ -947,7 +948,8 @@ const indexHTML = `<!DOCTYPE html>
             width: 50%;
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 10px;
+            padding-right: 10px;
         }
         .service-call-panel { 
             flex: 0 0 auto;
@@ -985,9 +987,10 @@ const indexHTML = `<!DOCTYPE html>
         .result-panel { 
             min-height: 200px;
             flex-shrink: 0;
-            margin-top: 20px;
-            width: 100%;
-            max-width: 100%;
+            margin-top: 10px;
+            margin: 10px 10px 0 10px;
+            width: calc(100% - 20px);
+            max-width: calc(100% - 20px);
         }
         .panel h2 { 
             color: #333; 
@@ -1783,6 +1786,10 @@ const indexHTML = `<!DOCTYPE html>
                 }
                 return obj;
             } else if (typeof obj === 'string') {
+                // 如果是空字符串，直接返回，不进行数字转换
+                if (obj === '') {
+                    return obj;
+                }
                 // 尝试将字符串转换为数字，如果转换后超过安全范围，则保持为字符串
                 const num = Number(obj);
                 if (!isNaN(num)) {
