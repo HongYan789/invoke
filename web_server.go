@@ -28,6 +28,7 @@ type CallHistory struct {
 	Timestamp   time.Time     `json:"timestamp"`
 	Result      string        `json:"result"`
 	Duration    int64         `json:"duration"` // 调用耗时，单位毫秒
+	Namespace   string        `json:"namespace"`
 }
 
 // WebServer Web服务器结构
@@ -50,6 +51,7 @@ type InvokeRequest struct {
 	Timeout     int             `json:"timeout"`
 	Group       string          `json:"group"`
 	Version     string          `json:"version"`
+	Namespace   string          `json:"namespace"`
 }
 
 // InvokeResponse Web调用响应
@@ -230,6 +232,7 @@ func (ws *WebServer) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		Success:     err == nil,
 		Timestamp:   time.Now(),
 		Duration:    duration,
+		Namespace:   req.Namespace,
 	}
 
 	if err != nil {
@@ -291,11 +294,12 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// 处理POST请求的JSON数据
-	var registry, app string
+	var registry, app, namespace string
 	if r.Method == "POST" {
 		var requestData struct {
-			Registry string `json:"registry"`
-			App      string `json:"app"`
+			Registry  string `json:"registry"`
+			App       string `json:"app"`
+			Namespace string `json:"namespace"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
 			color.Red("[WEB] 解析请求数据失败: %v", err)
@@ -308,10 +312,12 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		registry = requestData.Registry
 		app = requestData.App
+		namespace = requestData.Namespace
 	} else {
 		// 处理GET请求的查询参数
 		registry = r.URL.Query().Get("registry")
 		app = r.URL.Query().Get("app")
+		namespace = r.URL.Query().Get("namespace")
 	}
 
 	if registry == "" {
@@ -326,6 +332,7 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 		Registry:    registry,
 		Application: app,
 		Timeout:     time.Duration(ws.timeout) * time.Millisecond,
+		Namespace:   namespace,
 	}
 	color.Cyan("[WEB] 创建Dubbo客户端配置: 注册中心=%s, 应用=%s, 超时=%dms", config.Registry, config.Application, ws.timeout)
 
@@ -953,9 +960,9 @@ const indexHTML = `<!DOCTYPE html>
         }
         .service-call-panel { 
             flex: 0 0 auto;
-            height: 820px;
+            height: 810px;
             min-height: 500px;
-            max-height: 820px;
+            max-height: 810px;
         }
         .available-services-panel { 
             flex: 0 0 auto;
@@ -977,18 +984,38 @@ const indexHTML = `<!DOCTYPE html>
             min-height: 150px;
             max-height: 300px;
             overflow-y: auto;
+            overflow-x: hidden;
             border: 1px solid #e0e0e0;
             border-radius: 3px;
             background: white;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
+        }
+        .history-list .history-item {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0;
+            position: relative;
+        }
+        .history-list .history-item:hover {
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: nowrap;
+            z-index: 10;
+            background: #f8f9fa;
+        }
+        .history-list .history-item:hover .service-name {
+            white-space: nowrap;
+            overflow-x: auto;
+            overflow-y: hidden;
+            text-overflow: unset;
         }
         /* 调用结果面板独立显示在底部 */
         .result-panel { 
             min-height: 200px;
             flex-shrink: 0;
             margin-top: 10px;
-            margin: 10px 10px 0 10px;
+            margin-left: 10px;
+            margin-right: 10px;
             width: calc(100% - 20px);
             max-width: calc(100% - 20px);
         }
@@ -1183,23 +1210,43 @@ const indexHTML = `<!DOCTYPE html>
             min-height: 150px;
             max-height: 300px;
             overflow-y: auto;
+            overflow-x: hidden;
             border: 1px solid #e0e0e0;
             border-radius: 3px;
             background: white;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
         }
         .service-item {
             padding: 12px 16px; border-bottom: 1px solid #e9ecef;
             cursor: pointer; transition: all 0.2s ease;
-            word-wrap: break-word; /* 确保长服务名能够换行 */
-            overflow-wrap: break-word;
-            white-space: normal;
             position: relative;
             max-width: 100%;
             min-width: 0;
             flex-shrink: 1;
             overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .service-item:hover {
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: nowrap;
+            background: #f8f9fa;
+            z-index: 10;
+        }
+        }
+        .service-item::-webkit-scrollbar {
+            height: 4px;
+        }
+        .service-item::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 2px;
+        }
+        .service-item::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 2px;
+        }
+        .service-item::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
         }
         .service-item .service-name {
             font-weight: 500; 
@@ -1330,6 +1377,10 @@ const indexHTML = `<!DOCTYPE html>
                                     <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
+                            <div class="form-group">
+                                <label for="namespace">命名空间 (可选):</label>
+                                <input type="text" id="namespace" placeholder="public" value="public">
+                            </div>
                             <div class="form-row">
                                 <div class="form-col">
                                     <div class="form-group">
@@ -1356,6 +1407,10 @@ const indexHTML = `<!DOCTYPE html>
                                     <input type="text" id="registryExpr" value="{{.Registry}}" style="flex: 1;">
                                     <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="namespaceExpr">命名空间 (可选):</label>
+                                <input type="text" id="namespaceExpr" placeholder="public" value="public">
                             </div>
                             <div class="form-group">
                                 <label for="expression">调用表达式: <span style="font-size: 0.8em; color: #5c6bc0;">(service.method(params))</span></label>
@@ -1434,16 +1489,20 @@ const indexHTML = `<!DOCTYPE html>
                 traditional.style.display = 'none';
                 expression.style.display = 'block';
                 traditionalTypes.style.display = 'none';
-                // 同步注册中心值
+                // 同步注册中心值和命名空间值
                 const registryValue = document.getElementById('registry').value;
+                const namespaceValue = document.getElementById('namespace').value;
                 document.getElementById('registryExpr').value = registryValue;
+                document.getElementById('namespaceExpr').value = namespaceValue;
             } else {
                 traditional.style.display = 'block';
                 expression.style.display = 'none';
                 traditionalTypes.style.display = 'block';
-                // 同步注册中心值
+                // 同步注册中心值和命名空间值
                 const registryExprValue = document.getElementById('registryExpr').value;
+                const namespaceExprValue = document.getElementById('namespaceExpr').value;
                 document.getElementById('registry').value = registryExprValue;
+                document.getElementById('namespace').value = namespaceExprValue;
             }
         }
         function parseExpression(expr) {
@@ -1480,8 +1539,12 @@ const indexHTML = `<!DOCTYPE html>
             const format = document.getElementById('callFormat').value;
             let serviceName, methodName, parameters;
             if (format === 'expression') {
-                const expr = document.getElementById('expression').value.trim();
+                let expr = document.getElementById('expression').value.trim();
                 if (!expr) { alert('请输入调用表达式'); return; }
+                // 如果表达式以"invoke "开头，去除该前缀
+                if (expr.startsWith('invoke ')) {
+                    expr = expr.substring(7); // 去除"invoke "前缀
+                }
                 const parsed = parseExpression(expr);
                 if (!parsed) { alert('无效的表达式格式'); return; }
                 serviceName = parsed.serviceName;
@@ -1501,11 +1564,16 @@ const indexHTML = `<!DOCTYPE html>
             const registry = format === 'expression' ? 
                 document.getElementById('registryExpr').value.trim() : 
                 document.getElementById('registry').value.trim();
+            const namespaceInput = format === 'expression' ? 
+                document.getElementById('namespaceExpr') : 
+                document.getElementById('namespace');
+            const namespace = namespaceInput ? namespaceInput.value.trim() : 'public';
             const request = {
                 serviceName: serviceName, methodName: methodName,
                 parameters: parameters,
                 types: types ? types.split(',').map(t => t.trim()) : [],
-                registry: registry, app: '{{.App}}', timeout: 10000
+                registry: registry, app: '{{.App}}', timeout: 10000,
+                namespace: namespace
             };
             showLoading(true);
             const startTime = Date.now(); // 记录前端调用开始时间
@@ -1549,7 +1617,7 @@ const indexHTML = `<!DOCTYPE html>
                         const serviceName = 'com.example.Service';
                         const methodName = 'exampleMethod';
                         const params = data.examples.join(', ');
-                        document.getElementById('expression').value = serviceName + '.' + methodName + '(' + params + ')';
+                        document.getElementById('expression').value = 'invoke ' + serviceName + '.' + methodName + '(' + params + ')';
                     } else {
                         document.getElementById('parameters').value = JSON.stringify(data.examples, null, 2);
                     }
@@ -1888,11 +1956,11 @@ const indexHTML = `<!DOCTYPE html>
                     }
                     
                     if (paramText && paramText.length > 15) {
-                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: break-all;" title="' + paramText.replace(/"/g, '&quot;') + '">' +
+                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + paramText.replace(/"/g, '&quot;') + '">' +
                             paramText.substring(0, 15) + '...' +
                         '</div>';
                     } else if (paramText) {
-                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6; word-break: break-all; max-width: 100%;">' + paramText + '</div>';
+                        paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + paramText + '</div>';
                     } else {
                         paramDisplay = '<div style="font-size: 0.75em; margin-top: 2px; color: #9aa0a6;">无参数</div>';
                     }
@@ -1901,8 +1969,8 @@ const indexHTML = `<!DOCTYPE html>
                 }
                 
                 historyItem.innerHTML = 
-                    '<div class="service-name" style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: break-all;" title="' + fullServiceName + '">' + fullServiceName + '</div>' +
-                    '<div style="font-size: 0.8em; margin-top: 3px; color: #5f6368; max-width: 100%; word-break: break-all;">' +
+                    '<div class="service-name" style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + fullServiceName + '">' + fullServiceName + '</div>' +
+                    '<div style="font-size: 0.8em; margin-top: 3px; color: #5f6368; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' +
                         '<span class="' + statusClass + '">' + status + '</span> ' + timestamp +
                     '</div>' +
                     paramDisplay;
@@ -1921,6 +1989,15 @@ const indexHTML = `<!DOCTYPE html>
             // 填充表单字段
             document.getElementById('serviceName').value = item.serviceName || '';
             document.getElementById('methodName').value = item.methodName || '';
+            
+            // 填充命名空间字段
+            const currentFormat = document.getElementById('callFormat').value;
+            const namespaceInput = currentFormat === 'expression' ? 
+                document.getElementById('namespaceExpr') : 
+                document.getElementById('namespace');
+            if (namespaceInput) {
+                namespaceInput.value = item.namespace || 'public';
+            }
             
             // 处理参数：parameters现在是数组格式
             if (item.parameters) {
@@ -2074,7 +2151,10 @@ const indexHTML = `<!DOCTYPE html>
         }
         
         function testConnection() {
-            const registryInput = document.getElementById('registry') || document.getElementById('registryExpr');
+            const format = document.getElementById('callFormat').value;
+            const registryInput = format === 'expression' ? 
+                document.getElementById('registryExpr') : 
+                document.getElementById('registry');
             if (!registryInput || !registryInput.value.trim()) {
                 showConnectionResult('请先输入注册中心地址', false);
                 return;
@@ -2097,6 +2177,11 @@ const indexHTML = `<!DOCTYPE html>
             // 在服务列表中显示测试状态
             servicesList.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;"><div style="display: inline-block; width: 20px; height: 20px; border: 2px solid #f3f3f3; border-top: 2px solid #4a90e2; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 10px;"></div>正在测试连接...</div>';
             
+            const namespaceInput = format === 'expression' ? 
+                document.getElementById('namespaceExpr') : 
+                document.getElementById('namespace');
+            const namespace = namespaceInput ? namespaceInput.value.trim() : 'public';
+            
             fetch('/api/list', {
                 method: 'POST',
                 headers: {
@@ -2104,6 +2189,7 @@ const indexHTML = `<!DOCTYPE html>
                 },
                 body: JSON.stringify({
                     registry: registry,
+                    namespace: namespace,
                     app: document.getElementById('app') ? document.getElementById('app').value : 'dubbo-invoke-cli'
                 })
             })

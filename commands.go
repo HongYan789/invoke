@@ -348,44 +348,44 @@ func parseByType(param, paramType string) (interface{}, error) {
 }
 
 // generateExampleParams 生成示例参数
-func generateExampleParams(types []string) []string {
+func generateExampleParams(types []string) []interface{} {
 	color.Blue("[EXAMPLE] 开始生成示例参数，类型数量: %d", len(types))
 	color.Cyan("[EXAMPLE] 输入类型列表: %v", types)
 
-	examples := make([]string, len(types))
+	examples := make([]interface{}, len(types))
 
 	for i, paramType := range types {
 		color.Cyan("[EXAMPLE] 处理第%d个参数，类型: %s", i+1, paramType)
 
 		switch paramType {
 		case "java.lang.String", "string":
-			examples[i] = `"example"`
-			color.Green("[EXAMPLE] 生成字符串示例: %s", examples[i])
+			examples[i] = "example"
+			color.Green("[EXAMPLE] 生成字符串示例: %v", examples[i])
 		case "java.lang.Integer", "int":
-			examples[i] = "0"
-			color.Green("[EXAMPLE] 生成整数示例: %s", examples[i])
+			examples[i] = 0
+			color.Green("[EXAMPLE] 生成整数示例: %v", examples[i])
 		case "java.lang.Long", "long":
-			examples[i] = "0"
-			color.Green("[EXAMPLE] 生成长整数示例: %s", examples[i])
+			examples[i] = int64(0)
+			color.Green("[EXAMPLE] 生成长整数示例: %v", examples[i])
 		case "java.lang.Boolean", "boolean":
-			examples[i] = "false"
-			color.Green("[EXAMPLE] 生成布尔示例: %s", examples[i])
+			examples[i] = false
+			color.Green("[EXAMPLE] 生成布尔示例: %v", examples[i])
 		case "java.lang.Double", "double":
-			examples[i] = "0.0"
-			color.Green("[EXAMPLE] 生成双精度示例: %s", examples[i])
+			examples[i] = 0.0
+			color.Green("[EXAMPLE] 生成双精度示例: %v", examples[i])
 		case "java.util.List":
-			examples[i] = `["item1", "item2"]`
-			color.Green("[EXAMPLE] 生成列表示例: %s", examples[i])
+			examples[i] = []interface{}{"item1", "item2"}
+			color.Green("[EXAMPLE] 生成列表示例: %v", examples[i])
 		case "java.util.Map":
-			examples[i] = `{"key": "value"}`
-			color.Green("[EXAMPLE] 生成映射示例: %s", examples[i])
+			examples[i] = map[string]interface{}{"key": "value"}
+			color.Green("[EXAMPLE] 生成映射示例: %v", examples[i])
 		default:
 			if strings.Contains(paramType, "List") {
-				examples[i] = `[{"class":"` + paramType + `"}]`
-				color.Yellow("[EXAMPLE] 生成自定义列表示例: %s", examples[i])
+				examples[i] = []interface{}{map[string]interface{}{"class": paramType}}
+				color.Yellow("[EXAMPLE] 生成自定义列表示例: %v", examples[i])
 			} else {
-				examples[i] = `{"class":"` + paramType + `"}`
-				color.Yellow("[EXAMPLE] 生成自定义对象示例: %s", examples[i])
+				examples[i] = map[string]interface{}{"class": paramType}
+				color.Yellow("[EXAMPLE] 生成自定义对象示例: %v", examples[i])
 			}
 		}
 	}

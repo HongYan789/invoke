@@ -32,6 +32,7 @@ func main() {
 		rootCmd.AddCommand(newConfigCommand())
 		rootCmd.AddCommand(newVersionCommand())
 		rootCmd.AddCommand(newWebCommand())
+		rootCmd.AddCommand(newTestNacosCommand())
 
 	// 全局标志
 	rootCmd.PersistentFlags().StringP("config", "c", "config.yaml", "配置文件路径")
@@ -72,6 +73,24 @@ func newInvokeCommand() *cobra.Command {
 	cmd.Flags().BoolP("example", "e", false, "生成示例参数")
 
 	return cmd
+}
+
+// test-nacos命令 - 测试Nacos注册中心连接
+func newTestNacosCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "test-nacos",
+		Short: "测试Nacos注册中心连接",
+		Long: `测试与Nacos注册中心的连接，包括：
+- 连接测试
+- 获取服务列表
+- 查询服务详情
+- 验证服务实例状态`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			color.Green("开始测试Nacos注册中心连接...")
+			TestNacosRegistry()
+			return nil
+		},
+	}
 }
 
 // version命令 - 显示版本信息

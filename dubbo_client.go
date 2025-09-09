@@ -16,6 +16,7 @@ type DubboConfig struct {
 	Protocol    string        // 协议类型
 	Username    string        // 注册中心用户名
 	Password    string        // 注册中心密码
+	Namespace   string        // 命名空间（用于Nacos等注册中心）
 }
 
 // DubboClient Dubbo客户端

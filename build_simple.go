@@ -59,12 +59,10 @@ func (c *SimpleClient) Invoke(service, method string, params []interface{}) (int
 }
 
 // 列出服务
+// 简单客户端不提供mock数据，需要使用真实的注册中心客户端
 func (c *SimpleClient) ListServices() []string {
-	return []string{
-		"com.example.UserService",
-		"com.example.OrderService",
-		"com.example.ProductService",
-	}
+	fmt.Println("⚠️  简单客户端不支持服务发现，请使用ZooKeeper或Nacos客户端")
+	return []string{}
 }
 
 // 关闭连接
