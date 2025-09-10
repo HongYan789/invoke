@@ -1019,6 +1019,33 @@ const indexHTML = `<!DOCTYPE html>
             width: calc(100% - 20px);
             max-width: calc(100% - 20px);
         }
+        
+        /* 响应式布局 - 窄屏时单列显示 */
+        @media (max-width: 1024px) {
+            .top-row {
+                flex-direction: column;
+                height: auto;
+                gap: 20px;
+            }
+            
+            .left-column, .right-column {
+                flex: none;
+                width: 100%;
+                padding-right: 0;
+            }
+            
+            .service-call-panel {
+                height: auto;
+                min-height: 400px;
+                max-height: none;
+            }
+            
+            .available-services-panel, .history-panel {
+                height: 350px;
+                min-height: 300px;
+                max-height: 400px;
+            }
+        }
         .panel h2 { 
             color: #333; 
             margin-bottom: 15px; 
@@ -1371,13 +1398,18 @@ const indexHTML = `<!DOCTYPE html>
                         </div>
                         <div id="traditionalFormat">
                             <div class="form-group">
-                                <label for="registry">注册中心:</label>
-                                <div style="display: flex; gap: 10px; align-items: center;">
-                                    <input type="text" id="registry" value="{{.Registry}}" style="flex: 1;">
+                                <label>注册中心配置:</label>
+                                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                                    <select id="registryType" onchange="onRegistryTypeChange()" style="width: 120px; flex-shrink: 0;">
+                                        <option value="zookeeper">ZooKeeper</option>
+                                        <option value="nacos">Nacos</option>
+                                        <option value="dubbo">Dubbo</option>
+                                    </select>
+                                    <input type="text" id="registryAddress" placeholder="127.0.0.1:2181" value="127.0.0.1:2181" style="flex: 1;">
                                     <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="namespaceGroup" style="display: none;">
                                 <label for="namespace">命名空间 (可选):</label>
                                 <input type="text" id="namespace" placeholder="public" value="public">
                             </div>
@@ -1433,10 +1465,18 @@ const indexHTML = `<!DOCTYPE html>
                 <div class="right-column">
                     <div class="panel available-services-panel">
                         <h2>可用服务</h2>
+                        <div class="service-search-container" style="margin-bottom: 10px; display: none;" id="serviceSearchContainer">
+                            <input type="text" id="serviceSearch" placeholder="搜索服务名称..." 
+                                   style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;"
+                                   oninput="filterServices()">
+                        </div>
                         <div id="serviceList" class="service-list">
                             <div style="padding: 20px; text-align: center; color: #6c757d;">
                                 <p>请先连接注册中心</p>
                             </div>
+                        </div>
+                        <div class="service-pagination" style="display: none; text-align: center; margin-top: 10px;" id="servicePagination">
+                            <button id="loadMoreBtn" class="btn btn-secondary" onclick="loadMoreServices()" style="padding: 8px 16px; font-size: 14px;">加载更多服务</button>
                         </div>
                     </div>
                     
@@ -1561,13 +1601,36 @@ const indexHTML = `<!DOCTYPE html>
                 } catch (e) { alert('参数格式错误，请使用JSON数组格式: ' + e.message); return; }
             }
             const types = format === 'traditional' ? document.getElementById('types').value.trim() : '';
-            const registry = format === 'expression' ? 
-                document.getElementById('registryExpr').value.trim() : 
-                document.getElementById('registry').value.trim();
-            const namespaceInput = format === 'expression' ? 
-                document.getElementById('namespaceExpr') : 
-                document.getElementById('namespace');
-            const namespace = namespaceInput ? namespaceInput.value.trim() : 'public';
+            
+            // 获取注册中心类型和地址
+            const registryType = document.getElementById('registryType').value;
+            const registryAddress = document.getElementById('registryAddress').value.trim();
+            
+            if (!registryAddress) {
+                alert('请先输入注册中心地址');
+                return;
+            }
+            
+            // 根据注册中心类型构建完整的registry地址
+            let registry;
+            if (registryType === 'zookeeper') {
+                registry = 'zookeeper://' + registryAddress;
+            } else if (registryType === 'nacos') {
+                registry = 'nacos://' + registryAddress;
+            } else if (registryType === 'dubbo') {
+                registry = 'dubbo://' + registryAddress;
+            } else {
+                registry = registryAddress;
+            }
+            
+            let namespace;
+            if (format === 'expression') {
+                const namespaceExprElement = document.getElementById('namespaceExpr');
+                namespace = namespaceExprElement ? namespaceExprElement.value.trim() : 'public';
+            } else {
+                const namespaceElement = document.getElementById('namespace');
+                namespace = namespaceElement ? namespaceElement.value.trim() : 'public';
+            }
             const request = {
                 serviceName: serviceName, methodName: methodName,
                 parameters: parameters,
@@ -1651,16 +1714,52 @@ const indexHTML = `<!DOCTYPE html>
                     '<div style="padding: 20px; text-align: center; color: #dc3545;">网络错误: ' + error.message + '</div>';
             });
         }
+        // 全局变量用于分页和搜索
+        let allServices = [];
+        let displayedServices = [];
+        let currentPage = 0;
+        const pageSize = 20;
+        let filteredServices = [];
+        
         function displayServices(services) {
+            allServices = services || [];
+            filteredServices = [...allServices];
+            currentPage = 0;
+            displayedServices = [];
+            
             const serviceList = document.getElementById('serviceList');
-            serviceList.innerHTML = '';
+            const searchContainer = document.getElementById('serviceSearchContainer');
+            const pagination = document.getElementById('servicePagination');
             
             if (!services || services.length === 0) {
                 serviceList.innerHTML = '<div style="padding: 20px; text-align: center; color: #6c757d;"><i>暂无可用服务</i></div>';
+                searchContainer.style.display = 'none';
+                pagination.style.display = 'none';
                 return;
             }
             
-            services.forEach(service => {
+            // 显示搜索框
+            searchContainer.style.display = 'block';
+            
+            // 加载第一页
+            loadMoreServices();
+        }
+        
+        function loadMoreServices() {
+            const serviceList = document.getElementById('serviceList');
+            const pagination = document.getElementById('servicePagination');
+            const loadMoreBtn = document.getElementById('loadMoreBtn');
+            
+            const startIndex = currentPage * pageSize;
+            const endIndex = Math.min(startIndex + pageSize, filteredServices.length);
+            const newServices = filteredServices.slice(startIndex, endIndex);
+            
+            if (currentPage === 0) {
+                serviceList.innerHTML = '';
+                displayedServices = [];
+            }
+            
+            newServices.forEach(service => {
                 const item = document.createElement('div');
                 item.className = 'service-item';
                 
@@ -1683,7 +1782,43 @@ const indexHTML = `<!DOCTYPE html>
                 };
                 serviceList.appendChild(item);
             });
+            
+            displayedServices = displayedServices.concat(newServices);
+            currentPage++;
+            
+            // 更新分页按钮
+            if (endIndex >= filteredServices.length) {
+                pagination.style.display = 'none';
+            } else {
+                pagination.style.display = 'block';
+                loadMoreBtn.textContent = '加载更多服务 (' + displayedServices.length + '/' + filteredServices.length + ')';
+            }
         }
+        
+        function filterServices() {
+            const searchTerm = document.getElementById('serviceSearch').value.toLowerCase().trim();
+            
+            if (!searchTerm) {
+                filteredServices = [...allServices];
+            } else {
+                filteredServices = allServices.filter(service => 
+                    service.toLowerCase().includes(searchTerm)
+                );
+            }
+            
+            currentPage = 0;
+            displayedServices = [];
+            
+            const serviceList = document.getElementById('serviceList');
+            const pagination = document.getElementById('servicePagination');
+            
+            if (filteredServices.length === 0) {
+                 serviceList.innerHTML = '<div style="padding: 20px; text-align: center; color: #6c757d;"><i>未找到匹配的服务</i></div>';
+                 pagination.style.display = 'none';
+             } else {
+                 loadMoreServices();
+             }
+         }
         function loadMethods(serviceName) {
             const currentFormat = document.getElementById('callFormat').value;
             const registry = currentFormat === 'expression' ? 
@@ -2150,17 +2285,58 @@ const indexHTML = `<!DOCTYPE html>
             }
         }
         
+        function onRegistryTypeChange() {
+            const registryType = document.getElementById('registryType').value;
+            const namespaceGroup = document.getElementById('namespaceGroup');
+            
+            // 只有nacos时才显示命名空间
+            if (registryType === 'nacos') {
+                namespaceGroup.style.display = 'block';
+            } else {
+                namespaceGroup.style.display = 'none';
+            }
+            
+            // 根据注册中心类型设置默认端口
+            const addressInput = document.getElementById('registryAddress');
+            if (registryType === 'zookeeper') {
+                addressInput.placeholder = '127.0.0.1:2181';
+                if (!addressInput.value || addressInput.value === '127.0.0.1:8848' || addressInput.value === '127.0.0.1:8080') {
+                    addressInput.value = '127.0.0.1:2181';
+                }
+            } else if (registryType === 'nacos') {
+                addressInput.placeholder = '127.0.0.1:8848';
+                if (!addressInput.value || addressInput.value === '127.0.0.1:2181' || addressInput.value === '127.0.0.1:8080') {
+                    addressInput.value = '127.0.0.1:8848';
+                }
+            } else if (registryType === 'dubbo') {
+                addressInput.placeholder = '127.0.0.1:8080';
+                if (!addressInput.value || addressInput.value === '127.0.0.1:2181' || addressInput.value === '127.0.0.1:8848') {
+                    addressInput.value = '127.0.0.1:8080';
+                }
+            }
+        }
+        
         function testConnection() {
             const format = document.getElementById('callFormat').value;
-            const registryInput = format === 'expression' ? 
-                document.getElementById('registryExpr') : 
-                document.getElementById('registry');
-            if (!registryInput || !registryInput.value.trim()) {
+            const registryType = document.getElementById('registryType').value;
+            const registryAddress = document.getElementById('registryAddress').value.trim();
+            
+            if (!registryAddress) {
                 showConnectionResult('请先输入注册中心地址', false);
                 return;
             }
 
-            const registry = registryInput.value.trim();
+            // 构建完整的注册中心URL
+            let registry;
+            if (registryType === 'zookeeper') {
+                registry = 'zookeeper://' + registryAddress;
+            } else if (registryType === 'nacos') {
+                registry = 'nacos://' + registryAddress;
+            } else if (registryType === 'dubbo') {
+                registry = 'dubbo://' + registryAddress;
+            } else {
+                registry = registryAddress;
+            }
             const servicesList = document.getElementById('serviceList');
             
             // 找到所有测试连接按钮
@@ -2177,10 +2353,14 @@ const indexHTML = `<!DOCTYPE html>
             // 在服务列表中显示测试状态
             servicesList.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;"><div style="display: inline-block; width: 20px; height: 20px; border: 2px solid #f3f3f3; border-top: 2px solid #4a90e2; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 10px;"></div>正在测试连接...</div>';
             
-            const namespaceInput = format === 'expression' ? 
-                document.getElementById('namespaceExpr') : 
-                document.getElementById('namespace');
-            const namespace = namespaceInput ? namespaceInput.value.trim() : 'public';
+            let namespace;
+            if (format === 'expression') {
+                const namespaceExprElement = document.getElementById('namespaceExpr');
+                namespace = namespaceExprElement ? namespaceExprElement.value.trim() : 'public';
+            } else {
+                const namespaceElement = document.getElementById('namespace');
+                namespace = namespaceElement ? namespaceElement.value.trim() : 'public';
+            }
             
             fetch('/api/list', {
                 method: 'POST',
