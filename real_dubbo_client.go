@@ -585,48 +585,94 @@ func (c *RealDubboClient) parseRegistryURL() (*RegistryURL, error) {
 
 // connectToZookeeper 连接到ZooKeeper注册中心
 func (c *RealDubboClient) connectToZookeeper(address string) error {
-	// 尝试连接到ZooKeeper
-	conn, err := net.DialTimeout("tcp", address, c.config.Timeout)
+	// 连接到ZooKeeper获取服务提供者信息
+	zkConn, events, err := zk.Connect([]string{address}, time.Second*10)
 	if err != nil {
 		return fmt.Errorf("连接ZooKeeper注册中心失败: %v", err)
 	}
+	defer zkConn.Close()
 
-	// 尝试使用ruok命令验证连接（如果支持的话）
-	_, err = conn.Write([]byte("ruok"))
+	// 等待连接建立，最多等待10秒
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.State == zk.StateHasSession {
+				fmt.Printf("成功连接到ZooKeeper注册中心: %s\n", address)
+				c.connected = true
+				fmt.Printf("ZooKeeper注册中心连接就绪，将在调用时获取服务提供者\n")
+				return nil
+			}
+		case <-timeout:
+			return fmt.Errorf("ZooKeeper连接超时，当前状态: %v", zkConn.State())
+		}
+	}
+}
+
+// getProviderFromZooKeeper 从ZooKeeper获取服务提供者地址
+func (c *RealDubboClient) getProviderFromZooKeeper(serviceName string) (string, error) {
+	// 解析注册中心地址
+	registryURL, err := c.parseRegistryURL()
 	if err != nil {
-		// 如果ruok命令失败，仍然保持连接，因为可能是ZooKeeper版本不支持该命令
-		fmt.Printf("ZooKeeper ruok命令不支持，但TCP连接正常: %s\n", address)
-		c.conn = conn
-		c.connected = true
-		return nil
+		return "", fmt.Errorf("解析注册中心地址失败: %v", err)
 	}
 
-	// 尝试读取响应
-	buffer := make([]byte, 4)
-	conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
-	n, err := conn.Read(buffer)
-	if err != nil || n == 0 {
-		// 如果读取响应失败，仍然保持连接，因为TCP连接是成功的
-		fmt.Printf("ZooKeeper ruok响应读取失败，但TCP连接正常: %s\n", address)
-		c.conn = conn
-		c.connected = true
-		return nil
+	// 连接到ZooKeeper
+	zkConn, _, err := zk.Connect([]string{registryURL.Address}, time.Second*10)
+	if err != nil {
+		return "", fmt.Errorf("连接ZooKeeper失败: %v", err)
+	}
+	defer zkConn.Close()
+
+	// 构建服务路径
+	servicePath := fmt.Sprintf("/dubbo/%s/providers", serviceName)
+	fmt.Printf("查找服务提供者路径: %s\n", servicePath)
+
+	// 检查路径是否存在
+	exists, _, err := zkConn.Exists(servicePath)
+	if err != nil {
+		return "", fmt.Errorf("检查服务路径失败: %v", err)
+	}
+	if !exists {
+		return "", fmt.Errorf("服务 %s 在ZooKeeper中不存在", serviceName)
 	}
 
-	response := string(buffer[:n])
-	if response != "imok" {
-		// 如果响应不是预期的，仍然保持连接，因为TCP连接是成功的
-		fmt.Printf("ZooKeeper ruok响应异常: %s，但TCP连接正常: %s\n", response, address)
-		c.conn = conn
-		c.connected = true
-		return nil
+	// 获取提供者列表
+	providers, _, err := zkConn.Children(servicePath)
+	if err != nil {
+		return "", fmt.Errorf("获取服务提供者列表失败: %v", err)
 	}
 
-	// 保存连接供后续使用
-	c.conn = conn
-	c.connected = true
-	fmt.Printf("成功连接到ZooKeeper注册中心: %s\n", address)
-	return nil
+	if len(providers) == 0 {
+		return "", fmt.Errorf("服务 %s 没有可用的提供者", serviceName)
+	}
+
+	// 解析第一个提供者的地址
+	providerURL := providers[0]
+	fmt.Printf("找到服务提供者: %s\n", providerURL)
+
+	// 解析URL获取地址
+	address, err := c.parseProviderURL(providerURL)
+	if err != nil {
+		return "", fmt.Errorf("解析提供者URL失败: %v", err)
+	}
+
+	return address, nil
+}
+
+// parseProviderURL 解析提供者URL获取地址
+func (c *RealDubboClient) parseProviderURL(providerURL string) (string, error) {
+	// Dubbo提供者URL格式: dubbo://ip:port/serviceName?version=1.0.0&...
+	if strings.HasPrefix(providerURL, "dubbo://") {
+		// 移除协议前缀
+		url := strings.TrimPrefix(providerURL, "dubbo://")
+		// 提取地址部分（ip:port）
+		parts := strings.Split(url, "/")
+		if len(parts) > 0 {
+			return parts[0], nil
+		}
+	}
+	return "", fmt.Errorf("无效的提供者URL格式: %s", providerURL)
 }
 
 // connectToNacos 连接到Nacos注册中心
@@ -692,6 +738,27 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	}
 	if methodName == "" {
 		return nil, fmt.Errorf("方法名不能为空")
+	}
+
+	// 对于ZooKeeper模式，需要先获取服务提供者地址并建立连接
+	registryURL, err := c.parseRegistryURL()
+	if err == nil && registryURL.Protocol == "zookeeper" {
+		// 如果当前没有连接到实际的Dubbo服务提供者，先获取地址并连接
+		if c.conn == nil {
+			providerAddress, err := c.getProviderFromZooKeeper(serviceName)
+			if err != nil {
+				return nil, fmt.Errorf("从ZooKeeper获取服务提供者失败: %v", err)
+			}
+
+			// 连接到实际的Dubbo服务提供者
+			conn, err := net.DialTimeout("tcp", providerAddress, c.config.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("连接Dubbo服务提供者失败 %s: %v", providerAddress, err)
+			}
+
+			c.conn = conn
+			fmt.Printf("成功连接到Dubbo服务提供者: %s\n", providerAddress)
+		}
 	}
 
 	// 构建dubbo invoke命令，支持各种参数类型
@@ -1165,7 +1232,14 @@ func (c *RealDubboClient) formatSingleParameter(param interface{}) (string, erro
 				return v, nil // 直接返回JSON字符串
 			}
 		}
-		return fmt.Sprintf("\"%s\"", v), nil
+		// 确保字符串参数正确编码为UTF-8
+		// 对于包含中文字符的字符串，使用JSON编码确保正确的转义
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			// 如果JSON编码失败，回退到简单的引号包围
+			return fmt.Sprintf("\"%s\"", v), nil
+		}
+		return string(jsonBytes), nil
 	case int, int8, int16, int32, int64:
 		return fmt.Sprintf("%v", v), nil
 	case uint, uint8, uint16, uint32, uint64:

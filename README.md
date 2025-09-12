@@ -11,8 +11,23 @@
 - 💡 **示例生成**: 自动生成参数示例，快速上手
 - 📋 **服务发现**: 列出可用服务和方法
 - 🔍 **详细日志**: 支持详细模式，便于调试
+- 🌐 **Web UI**: 提供图形化界面，支持浏览器访问
 
 ## 快速开始
+
+### Windows双击启动（推荐）
+
+在Windows环境下，您可以直接双击 `dubbo-invoke.exe` 文件启动Web UI界面：
+
+1. 双击 `dubbo-invoke.exe` 文件
+2. 程序会自动启动Web服务并在默认浏览器中打开界面
+3. 命令行窗口会自动保持打开状态，无需手动操作
+4. 程序会每30秒显示一次运行状态，确保服务正常运行
+5. 使用 `Ctrl+C` 可以安全停止服务
+
+或者使用批处理文件启动：
+1. 双击 `start-web-ui.bat` 文件
+2. 程序会自动启动Web服务并在默认浏览器中打开界面
 
 ### 1. 基本调用
 
@@ -105,6 +120,7 @@
 
 - `dubbo-invoke` - macOS/Linux可执行文件
 - `dubbo-invoke.exe` - Windows可执行文件
+- `start-web-ui.bat` - Windows批处理启动文件
 - `test-config.yaml` - 示例配置文件
 
 ## 支持的参数类型
@@ -124,6 +140,16 @@
 - Zookeeper: `zookeeper://127.0.0.1:2181`
 - Nacos: `nacos://127.0.0.1:8848`
 - Consul: `consul://127.0.0.1:8500`
+
+## Web UI 功能
+
+Web界面提供了图形化的操作方式：
+
+1. **服务调用**: 通过表单填写服务名、方法名和参数进行调用
+2. **服务发现**: 自动列出注册中心中的可用服务
+3. **调用历史**: 记录最近的调用历史，支持一键回填
+4. **参数示例**: 自动生成参数示例，方便快速上手
+5. **结果展示**: 格式化显示调用结果，支持大整数精度保持
 
 ## 命令参考
 
@@ -148,6 +174,20 @@ dubbo-invoke invoke [expression] [flags]
 # 示例:
   'com.example.UserService.getUserById(123)'
   'com.example.UserService.createUser({"name":"张三","age":25})'
+```
+
+### web - 启动Web UI
+```bash
+# 启动Web UI服务器
+dubbo-invoke web [flags]
+
+# 标志:
+  -p, --port int      Web服务器端口 (default 8080)
+  -t, --timeout int   调用超时时间(毫秒) (default 30000)
+
+# 示例:
+  dubbo-invoke web                    # 使用默认端口8080
+  dubbo-invoke web --port 9090       # 使用指定端口
 ```
 
 ## 版本信息

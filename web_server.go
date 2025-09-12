@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -131,6 +132,8 @@ func (ws *WebServer) Start() error {
 
 	// 添加静态文件服务
 	http.Handle("/test_download.html", http.HandlerFunc(ws.handleStaticFile))
+	// 添加favicon路由
+	http.HandleFunc("/favicon.ico", ws.handleFavicon)
 
 	// enhanceWebServerWithCompleteData(ws)
 	http.HandleFunc("/api/test-precision", ws.handleTestPrecision)
@@ -143,7 +146,25 @@ func (ws *WebServer) Start() error {
 	color.Green("✨ 数据完整性增强: 已启用")
 	fmt.Println()
 
-	return http.ListenAndServe(addr, nil)
+	// 在Windows平台下，启动一个goroutine来保持控制台活跃
+	// 注意：浏览器打开逻辑已移至main.go中统一处理
+	if runtime.GOOS == "windows" && len(os.Args) <= 2 {
+		// 保持控制台活跃
+		go func() {
+			for {
+				time.Sleep(30 * time.Second)
+				color.Green("💓 Web服务运行中... (按 Ctrl+C 停止)")
+			}
+		}()
+	}
+
+	// 启动Web服务器
+	server := &http.Server{Addr: addr}
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		color.Red("❌ Web服务器启动失败: %v", err)
+		return err
+	}
+	return nil
 }
 
 // handleIndex 处理首页
@@ -900,6 +921,7 @@ const indexHTML = `<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dubbo Invoke Web UI</title>
+    <link rel="icon" type="image/png" href="/favicon.ico">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -1434,13 +1456,18 @@ const indexHTML = `<!DOCTYPE html>
                         </div>
                         <div id="expressionFormat" style="display: none;">
                             <div class="form-group">
-                                <label for="registry">注册中心:</label>
-                                <div style="display: flex; gap: 10px; align-items: center;">
-                                    <input type="text" id="registryExpr" value="{{.Registry}}" style="flex: 1;">
+                                <label>注册中心配置:</label>
+                                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                                    <select id="registryTypeExpr" onchange="onRegistryTypeChangeExpr()" style="width: 120px; flex-shrink: 0;">
+                                        <option value="zookeeper">ZooKeeper</option>
+                                        <option value="nacos">Nacos</option>
+                                        <option value="dubbo">Dubbo</option>
+                                    </select>
+                                    <input type="text" id="registryAddressExpr" value="{{.Registry}}" placeholder="127.0.0.1:2181" style="flex: 1;">
                                     <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="namespaceGroupExpr" style="display: block;">
                                 <label for="namespaceExpr">命名空间 (可选):</label>
                                 <input type="text" id="namespaceExpr" placeholder="public" value="public">
                             </div>
@@ -1521,28 +1548,62 @@ const indexHTML = `<!DOCTYPE html>
     </div>
     <script>
         function toggleCallFormat() {
-            const format = document.getElementById('callFormat').value;
+            const callFormatEl = document.getElementById('callFormat');
+            if (!callFormatEl) return;
+            
+            const format = callFormatEl.value;
             const traditional = document.getElementById('traditionalFormat');
             const expression = document.getElementById('expressionFormat');
             const traditionalTypes = document.getElementById('traditionalTypes');
+            
+            if (!traditional || !expression || !traditionalTypes) return;
+            
             if (format === 'expression') {
                 traditional.style.display = 'none';
                 expression.style.display = 'block';
                 traditionalTypes.style.display = 'none';
-                // 同步注册中心值和命名空间值
-                const registryValue = document.getElementById('registry').value;
-                const namespaceValue = document.getElementById('namespace').value;
-                document.getElementById('registryExpr').value = registryValue;
-                document.getElementById('namespaceExpr').value = namespaceValue;
+                // 同步注册中心类型、地址和命名空间值
+                const registryTypeEl = document.getElementById('registryType');
+                const registryAddressEl = document.getElementById('registryAddress');
+                const namespaceEl = document.getElementById('namespace');
+                const registryTypeExprEl = document.getElementById('registryTypeExpr');
+                const registryAddressExprEl = document.getElementById('registryAddressExpr');
+                const namespaceExprEl = document.getElementById('namespaceExpr');
+                
+                if (registryTypeEl && registryTypeExprEl) {
+                    registryTypeExprEl.value = registryTypeEl.value;
+                }
+                if (registryAddressEl && registryAddressExprEl) {
+                    registryAddressExprEl.value = registryAddressEl.value;
+                }
+                if (namespaceEl && namespaceExprEl) {
+                    namespaceExprEl.value = namespaceEl.value;
+                }
+                // 触发表达式模式的注册中心类型变化事件
+                onRegistryTypeChangeExpr();
             } else {
                 traditional.style.display = 'block';
                 expression.style.display = 'none';
                 traditionalTypes.style.display = 'block';
-                // 同步注册中心值和命名空间值
-                const registryExprValue = document.getElementById('registryExpr').value;
-                const namespaceExprValue = document.getElementById('namespaceExpr').value;
-                document.getElementById('registry').value = registryExprValue;
-                document.getElementById('namespace').value = namespaceExprValue;
+                // 同步注册中心类型、地址和命名空间值
+                const registryTypeEl = document.getElementById('registryType');
+                const registryAddressEl = document.getElementById('registryAddress');
+                const namespaceEl = document.getElementById('namespace');
+                const registryTypeExprEl = document.getElementById('registryTypeExpr');
+                const registryAddressExprEl = document.getElementById('registryAddressExpr');
+                const namespaceExprEl = document.getElementById('namespaceExpr');
+                
+                if (registryTypeEl && registryTypeExprEl) {
+                    registryTypeEl.value = registryTypeExprEl.value;
+                }
+                if (registryAddressEl && registryAddressExprEl) {
+                    registryAddressEl.value = registryAddressExprEl.value;
+                }
+                if (namespaceEl && namespaceExprEl) {
+                    namespaceEl.value = namespaceExprEl.value;
+                }
+                // 触发传统模式的注册中心类型变化事件
+                onRegistryTypeChange();
             }
         }
         function parseExpression(expr) {
@@ -1563,17 +1624,89 @@ const indexHTML = `<!DOCTYPE html>
                     if (paramsPart.trim().startsWith('[')) {
                         parameters = JSON.parse(paramsPart);
                     } else {
-                        parameters = [paramsPart.trim()];
-                        try {
-                            const parsed = JSON.parse(paramsPart.trim());
-                            parameters = [parsed];
-                        } catch (e) {}
+                        // 使用智能参数分割逻辑
+                        const paramStrings = parseParametersFromExpression(paramsPart.trim());
+                        parameters = paramStrings.map(paramStr => {
+                            try {
+                                return JSON.parse(paramStr);
+                            } catch (e) {
+                                // 如果不是JSON格式，去除引号后返回字符串
+                                if (paramStr.startsWith('"') && paramStr.endsWith('"')) {
+                                    return paramStr.substring(1, paramStr.length - 1);
+                                }
+                                return paramStr;
+                            }
+                        });
                     }
                 } catch (e) {
                     parameters = [paramsPart.trim()];
                 }
             }
             return { serviceName, methodName, parameters };
+        }
+        
+        // 从表达式中解析参数的函数，与后端逻辑保持一致
+        function parseParametersFromExpression(paramsPart) {
+            if (!paramsPart || paramsPart.trim() === '') {
+                return [];
+            }
+            
+            const params = [];
+            let current = '';
+            let braceCount = 0;
+            let bracketCount = 0;
+            let inQuotes = false;
+            let escapeNext = false;
+            
+            for (let i = 0; i < paramsPart.length; i++) {
+                const char = paramsPart[i];
+                
+                if (escapeNext) {
+                    current += char;
+                    escapeNext = false;
+                    continue;
+                }
+                
+                if (char === '\\') {
+                    escapeNext = true;
+                    current += char;
+                    continue;
+                }
+                
+                if (char === '"') {
+                    inQuotes = !inQuotes;
+                }
+                
+                if (!inQuotes) {
+                    if (char === '{') {
+                        braceCount++;
+                    } else if (char === '}') {
+                        braceCount--;
+                    } else if (char === '[') {
+                        bracketCount++;
+                    } else if (char === ']') {
+                        bracketCount--;
+                    } else if (char === ',' && braceCount === 0 && bracketCount === 0) {
+                        // 找到参数分隔符
+                        const param = current.trim();
+                        if (param !== '') {
+                            params.push(param);
+                        }
+                        current = '';
+                        continue;
+                    }
+                }
+                
+                current += char;
+            }
+            
+            // 添加最后一个参数
+            const param = current.trim();
+            if (param !== '') {
+                params.push(param);
+            }
+            
+            return params;
         }
         function invokeService() {
             const format = document.getElementById('callFormat').value;
@@ -1600,11 +1733,40 @@ const indexHTML = `<!DOCTYPE html>
                     parameters = paramsText ? JSON.parse(paramsText) : [];
                 } catch (e) { alert('参数格式错误，请使用JSON数组格式: ' + e.message); return; }
             }
-            const types = format === 'traditional' ? document.getElementById('types').value.trim() : '';
+            // 获取参数类型信息
+            let types = '';
+            if (format === 'traditional') {
+                types = document.getElementById('types').value.trim();
+            } else {
+                // 表达式格式：根据参数自动推断类型
+                if (parameters && parameters.length > 0) {
+                    types = parameters.map(param => {
+                        if (typeof param === 'string') {
+                            return 'java.lang.String';
+                        } else if (typeof param === 'number') {
+                            return Number.isInteger(param) ? 'java.lang.Integer' : 'java.lang.Double';
+                        } else if (typeof param === 'boolean') {
+                            return 'java.lang.Boolean';
+                        } else if (Array.isArray(param)) {
+                            return 'java.util.List';
+                        } else if (typeof param === 'object' && param !== null) {
+                            return 'java.lang.Object';
+                        } else {
+                            return 'java.lang.Object';
+                        }
+                    }).join(',');
+                }
+            }
             
             // 获取注册中心类型和地址
-            const registryType = document.getElementById('registryType').value;
-            const registryAddress = document.getElementById('registryAddress').value.trim();
+            let registryType, registryAddress;
+            if (format === 'expression') {
+                registryType = document.getElementById('registryTypeExpr').value;
+                registryAddress = document.getElementById('registryAddressExpr').value.trim();
+            } else {
+                registryType = document.getElementById('registryType').value;
+                registryAddress = document.getElementById('registryAddress').value.trim();
+            }
             
             if (!registryAddress) {
                 alert('请先输入注册中心地址');
@@ -1690,14 +1852,32 @@ const indexHTML = `<!DOCTYPE html>
         }
         function loadServices() {
             const currentFormat = document.getElementById('callFormat').value;
-            const registry = currentFormat === 'expression' ? 
-                document.getElementById('registryExpr').value.trim() : 
-                document.getElementById('registry').value.trim();
+            let registryType, registryAddress;
             
-            if (!registry) {
+            if (currentFormat === 'expression') {
+                registryType = document.getElementById('registryTypeExpr').value;
+                registryAddress = document.getElementById('registryAddressExpr').value.trim();
+            } else {
+                registryType = document.getElementById('registryType').value;
+                registryAddress = document.getElementById('registryAddress').value.trim();
+            }
+            
+            if (!registryAddress) {
                 document.getElementById('serviceList').innerHTML = 
                     '<div style="padding: 20px; text-align: center; color: #6c757d;">请先配置注册中心</div>';
                 return;
+            }
+            
+            // 根据注册中心类型构建完整的registry地址
+            let registry;
+            if (registryType === 'zookeeper') {
+                registry = 'zookeeper://' + registryAddress;
+            } else if (registryType === 'nacos') {
+                registry = 'nacos://' + registryAddress;
+            } else if (registryType === 'dubbo') {
+                registry = 'dubbo://' + registryAddress;
+            } else {
+                registry = registryAddress;
             }
             
             fetch('/api/list?registry=' + encodeURIComponent(registry) + '&app={{.App}}&timeout=10000')
@@ -1821,9 +2001,11 @@ const indexHTML = `<!DOCTYPE html>
          }
         function loadMethods(serviceName) {
             const currentFormat = document.getElementById('callFormat').value;
+            const registryExprElement = document.getElementById('registryExpr');
+            const registryElement = document.getElementById('registry');
             const registry = currentFormat === 'expression' ? 
-                document.getElementById('registryExpr').value.trim() : 
-                document.getElementById('registry').value.trim();
+                (registryExprElement ? registryExprElement.value.trim() : '') : 
+                (registryElement ? registryElement.value.trim() : '');
             
             if (!registry || !serviceName) {
                 return;
@@ -2122,65 +2304,78 @@ const indexHTML = `<!DOCTYPE html>
         }
         function fillFromHistory(item) {
             // 填充表单字段
-            document.getElementById('serviceName').value = item.serviceName || '';
-            document.getElementById('methodName').value = item.methodName || '';
+            const serviceNameEl = document.getElementById('serviceName');
+            if (serviceNameEl) serviceNameEl.value = item.serviceName || '';
+            
+            const methodNameEl = document.getElementById('methodName');
+            if (methodNameEl) methodNameEl.value = item.methodName || '';
             
             // 填充命名空间字段
-            const currentFormat = document.getElementById('callFormat').value;
-            const namespaceInput = currentFormat === 'expression' ? 
-                document.getElementById('namespaceExpr') : 
-                document.getElementById('namespace');
-            if (namespaceInput) {
-                namespaceInput.value = item.namespace || 'public';
+            const callFormatEl = document.getElementById('callFormat');
+            if (callFormatEl) {
+                const currentFormat = callFormatEl.value;
+                const namespaceInput = currentFormat === 'expression' ? 
+                    document.getElementById('namespaceExpr') : 
+                    document.getElementById('namespace');
+                if (namespaceInput) {
+                    namespaceInput.value = item.namespace || 'public';
+                }
             }
             
             // 处理参数：parameters现在是数组格式
-            if (item.parameters) {
-                if (Array.isArray(item.parameters)) {
-                    // 直接处理数组格式的参数，处理其中的大整数
-                    const processedParams = processLargeIntegers(item.parameters);
-                    document.getElementById('parameters').value = JSON.stringify(processedParams);
-                } else {
-                    // 兼容旧的字符串格式
-                    try {
-                        const parsed = JSON.parse(item.parameters);
-                        if (Array.isArray(parsed)) {
-                            // 处理其中的大整数
-                            const processedParams = processLargeIntegers(parsed);
-                            document.getElementById('parameters').value = JSON.stringify(processedParams);
-                        } else {
-                            document.getElementById('parameters').value = item.parameters;
+            const parametersEl = document.getElementById('parameters');
+            if (parametersEl) {
+                if (item.parameters) {
+                    if (Array.isArray(item.parameters)) {
+                        // 直接处理数组格式的参数，处理其中的大整数
+                        const processedParams = processLargeIntegers(item.parameters);
+                        parametersEl.value = JSON.stringify(processedParams);
+                    } else {
+                        // 兼容旧的字符串格式
+                        try {
+                            const parsed = JSON.parse(item.parameters);
+                            if (Array.isArray(parsed)) {
+                                // 处理其中的大整数
+                                const processedParams = processLargeIntegers(parsed);
+                                parametersEl.value = JSON.stringify(processedParams);
+                            } else {
+                                parametersEl.value = item.parameters;
+                            }
+                        } catch (e) {
+                            parametersEl.value = item.parameters;
                         }
-                    } catch (e) {
-                        document.getElementById('parameters').value = item.parameters;
                     }
+                } else {
+                    parametersEl.value = '';
                 }
-            } else {
-                document.getElementById('parameters').value = '';
             }
             
             // 处理参数类型
-            if (item.types) {
-                if (Array.isArray(item.types)) {
-                    document.getElementById('types').value = item.types.join(', ');
-                } else {
-                    try {
-                        const parsed = JSON.parse(item.types);
-                        if (Array.isArray(parsed)) {
-                            document.getElementById('types').value = parsed.join(', ');
-                        } else {
-                            document.getElementById('types').value = item.types;
+            const typesEl = document.getElementById('types');
+            if (typesEl) {
+                if (item.types) {
+                    if (Array.isArray(item.types)) {
+                        typesEl.value = item.types.join(', ');
+                    } else {
+                        try {
+                            const parsed = JSON.parse(item.types);
+                            if (Array.isArray(parsed)) {
+                                typesEl.value = parsed.join(', ');
+                            } else {
+                                typesEl.value = item.types;
+                            }
+                        } catch (e) {
+                            typesEl.value = item.types;
                         }
-                    } catch (e) {
-                        document.getElementById('types').value = item.types;
                     }
+                } else {
+                    typesEl.value = '';
                 }
-            } else {
-                document.getElementById('types').value = '';
             }
             
             // 填充注册中心地址
-            document.getElementById('registry').value = item.registry || '';
+            const registryEl = document.getElementById('registry');
+            if (registryEl) registryEl.value = item.registry || '';
             
             // 填充调用结果
             if (item.result) {
@@ -2245,11 +2440,15 @@ const indexHTML = `<!DOCTYPE html>
             }
             
             // 切换到传统格式
-            document.getElementById('callFormat').value = 'traditional';
-            toggleCallFormat();
+            const callFormatEl3 = document.getElementById('callFormat');
+            if (callFormatEl3) {
+                callFormatEl3.value = 'traditional';
+                toggleCallFormat();
+            }
             
             // 重新设置注册中心地址（因为toggleCallFormat可能会重置它）
-            document.getElementById('registry').value = item.registry || '';
+            const registryEl3 = document.getElementById('registry');
+            if (registryEl3) registryEl3.value = item.registry || '';
         }
         
         function copyResult() {
@@ -2316,10 +2515,48 @@ const indexHTML = `<!DOCTYPE html>
             }
         }
         
+        function onRegistryTypeChangeExpr() {
+            const registryTypeExpr = document.getElementById('registryTypeExpr').value;
+            const namespaceGroupExpr = document.getElementById('namespaceGroupExpr');
+            
+            // 只有nacos时才显示命名空间
+            if (registryTypeExpr === 'nacos') {
+                namespaceGroupExpr.style.display = 'block';
+            } else {
+                namespaceGroupExpr.style.display = 'none';
+            }
+            
+            // 根据注册中心类型设置默认端口
+            const addressInputExpr = document.getElementById('registryAddressExpr');
+            if (registryTypeExpr === 'zookeeper') {
+                addressInputExpr.placeholder = '127.0.0.1:2181';
+                if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:8848' || addressInputExpr.value === '127.0.0.1:8080') {
+                    addressInputExpr.value = '127.0.0.1:2181';
+                }
+            } else if (registryTypeExpr === 'nacos') {
+                addressInputExpr.placeholder = '127.0.0.1:8848';
+                if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:2181' || addressInputExpr.value === '127.0.0.1:8080') {
+                    addressInputExpr.value = '127.0.0.1:8848';
+                }
+            } else if (registryTypeExpr === 'dubbo') {
+                addressInputExpr.placeholder = '127.0.0.1:8080';
+                if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:2181' || addressInputExpr.value === '127.0.0.1:8848') {
+                    addressInputExpr.value = '127.0.0.1:8080';
+                }
+            }
+        }
+        
         function testConnection() {
             const format = document.getElementById('callFormat').value;
-            const registryType = document.getElementById('registryType').value;
-            const registryAddress = document.getElementById('registryAddress').value.trim();
+            let registryType, registryAddress;
+            
+            if (format === 'expression') {
+                registryType = document.getElementById('registryTypeExpr').value;
+                registryAddress = document.getElementById('registryAddressExpr').value.trim();
+            } else {
+                registryType = document.getElementById('registryType').value;
+                registryAddress = document.getElementById('registryAddress').value.trim();
+            }
             
             if (!registryAddress) {
                 showConnectionResult('请先输入注册中心地址', false);
@@ -2439,6 +2676,28 @@ func (ws *WebServer) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 	filePath := "./test_download.html"
 	content, err := os.ReadFile(filePath)
 	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Write(content)
+}
+
+// handleFavicon 处理favicon请求
+func (ws *WebServer) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 缓存1天
+
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 读取图标文件
+	filePath := "/Users/hongyan/work/workspace/todo/invoke/icons/dubbo.png"
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		// 如果文件不存在，返回404
 		http.NotFound(w, r)
 		return
 	}

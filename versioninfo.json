@@ -1,0 +1,43 @@
+{
+  "FixedFileInfo": {
+    "FileVersion": {
+      "Major": 1,
+      "Minor": 0,
+      "Patch": 0,
+      "Build": 0
+    },
+    "ProductVersion": {
+      "Major": 1,
+      "Minor": 0,
+      "Patch": 0,
+      "Build": 0
+    },
+    "FileFlagsMask": "3f",
+    "FileFlags ": "00",
+    "FileOS": "040004",
+    "FileType": "01",
+    "FileSubType": "00"
+  },
+  "StringFileInfo": {
+    "Comments": "Dubbo接口调用工具",
+    "CompanyName": "Dubbo Invoke",
+    "FileDescription": "Dubbo接口调用工具 - 支持泛化调用和Web UI",
+    "FileVersion": "1.0.0.0",
+    "InternalName": "dubbo-invoke",
+    "LegalCopyright": "Copyright © 2024",
+    "LegalTrademarks": "",
+    "OriginalFilename": "dubbo-invoke.exe",
+    "PrivateBuild": "",
+    "ProductName": "Dubbo Invoke CLI",
+    "ProductVersion": "1.0.0.0",
+    "SpecialBuild": ""
+  },
+  "VarFileInfo": {
+    "Translation": {
+      "LangID": "0409",
+      "CharsetID": "04B0"
+    }
+  },
+  "IconPath": "icons/dubbo.ico",
+  "ManifestPath": ""
+}

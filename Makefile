@@ -32,6 +32,21 @@ build-windows: deps
 	@echo "正在构建 Windows 版本..."
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(APP_NAME).exe .
 
+# Windows 构建（带图标）
+.PHONY: build-windows-icon
+build-windows-icon: deps
+	@echo "正在构建带图标的 Windows 版本..."
+	@echo "生成资源文件..."
+	/Users/hongyan/go/bin/goversioninfo -icon=icons/dubbo.ico versioninfo.json
+	@echo "编译 Windows exe..."
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(APP_NAME).exe .
+
+# Windows 构建（32位）
+.PHONY: build-windows-32
+build-windows-32: deps
+	@echo "正在构建 Windows 32位版本..."
+	GOOS=windows GOARCH=386 go build $(LDFLAGS) -o $(APP_NAME)-32.exe .
+
 # Linux 构建
 .PHONY: build-linux
 build-linux: deps
@@ -46,21 +61,14 @@ build-darwin: deps
 
 # 交叉编译所有平台
 .PHONY: build-all
-build-all: build-windows build-linux build-darwin
+build-all: build-windows build-windows-32 build-linux build-darwin
 	@echo "所有平台构建完成"
 
 # 清理
 .PHONY: clean
 clean:
 	@echo "正在清理构建文件..."
-	rm -f $(APP_NAME) $(APP_NAME).exe $(APP_NAME)-linux $(APP_NAME)-darwin
-
-# 删除test目标
-# # 测试
-# .PHONY: test
-# test:
-# 	@echo "正在运行测试..."
-# 	go test -v ./...
+	rm -f $(APP_NAME) $(APP_NAME).exe $(APP_NAME)-32.exe $(APP_NAME)-linux $(APP_NAME)-darwin
 
 # 格式化代码
 .PHONY: fmt
@@ -96,18 +104,18 @@ uninstall:
 .PHONY: help
 help:
 	@echo "可用的 make 目标:"
-	@echo "  build         - 构建当前平台版本"
-	@echo "  build-windows - 构建 Windows 版本"
-	@echo "  build-linux   - 构建 Linux 版本"
-	@echo "  build-darwin  - 构建 macOS 版本"
-	@echo "  build-all     - 构建所有平台版本"
-	@echo "  deps          - 安装依赖"
-	# 删除test相关的帮助信息
-	# @echo "  test          - 运行测试"
-	@echo "  fmt           - 格式化代码"
-	@echo "  lint          - 代码检查"
-	@echo "  clean         - 清理构建文件"
-	@echo "  install       - 安装到系统"
-	@echo "  uninstall     - 从系统卸载"
-	@echo "  example       - 运行示例"
-	@echo "  help          - 显示此帮助信息"
+	@echo "  build             - 构建当前平台版本"
+	@echo "  build-windows     - 构建 Windows 版本"
+	@echo "  build-windows-icon - 构建带图标的 Windows 版本"
+	@echo "  build-windows-32  - 构建 Windows 32位版本"
+	@echo "  build-linux       - 构建 Linux 版本"
+	@echo "  build-darwin      - 构建 macOS 版本"
+	@echo "  build-all         - 构建所有平台版本"
+	@echo "  deps              - 安装依赖"
+	@echo "  fmt               - 格式化代码"
+	@echo "  lint              - 代码检查"
+	@echo "  clean             - 清理构建文件"
+	@echo "  install           - 安装到系统"
+	@echo "  uninstall         - 从系统卸载"
+	@echo "  example           - 运行示例"
+	@echo "  help              - 显示此帮助信息"
