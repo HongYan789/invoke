@@ -10,6 +10,7 @@ import (
 	"golang.org/x/text/transform"
 	"io"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -662,17 +663,25 @@ func (c *RealDubboClient) getProviderFromZooKeeper(serviceName string) (string, 
 
 // parseProviderURL 解析提供者URL获取地址
 func (c *RealDubboClient) parseProviderURL(providerURL string) (string, error) {
+	// 首先进行URL解码
+	decodedURL, err := url.QueryUnescape(providerURL)
+	if err != nil {
+		return "", fmt.Errorf("URL解码失败: %v", err)
+	}
+	
+	fmt.Printf("解码后的URL: %s\n", decodedURL)
+	
 	// Dubbo提供者URL格式: dubbo://ip:port/serviceName?version=1.0.0&...
-	if strings.HasPrefix(providerURL, "dubbo://") {
+	if strings.HasPrefix(decodedURL, "dubbo://") {
 		// 移除协议前缀
-		url := strings.TrimPrefix(providerURL, "dubbo://")
+		urlPath := strings.TrimPrefix(decodedURL, "dubbo://")
 		// 提取地址部分（ip:port）
-		parts := strings.Split(url, "/")
+		parts := strings.Split(urlPath, "/")
 		if len(parts) > 0 {
 			return parts[0], nil
 		}
 	}
-	return "", fmt.Errorf("无效的提供者URL格式: %s", providerURL)
+	return "", fmt.Errorf("无效的提供者URL格式: %s", decodedURL)
 }
 
 // connectToNacos 连接到Nacos注册中心
@@ -771,8 +780,18 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	invokeCmd := fmt.Sprintf("invoke %s.%s(%s)\n", serviceName, methodName, paramStr)
 	fmt.Printf("[DUBBO CLIENT] 发送命令: %s", invokeCmd)
 
+	// 将UTF-8编码的命令转换为GBK编码后发送
+	// 因为很多Java Dubbo服务端默认使用GBK编码处理中文字符
+	gbkBytes, err := c.convertToGBK(invokeCmd)
+	if err != nil {
+		fmt.Printf("[DUBBO CLIENT] GBK编码转换失败，使用UTF-8: %v\n", err)
+		gbkBytes = []byte(invokeCmd)
+	} else {
+		fmt.Printf("[DUBBO CLIENT] 命令已转换为GBK编码\n")
+	}
+
 	// 发送invoke命令
-	_, err = c.conn.Write([]byte(invokeCmd))
+	_, err = c.conn.Write(gbkBytes)
 	if err != nil {
 		return nil, fmt.Errorf("发送invoke命令失败: %v", err)
 	}
@@ -1180,6 +1199,17 @@ func (c *RealDubboClient) Ping() error {
 		return fmt.Errorf("客户端未连接")
 	}
 	return nil
+}
+
+// convertToGBK 将UTF-8字符串转换为GBK编码的字节数组
+func (c *RealDubboClient) convertToGBK(text string) ([]byte, error) {
+	// 将UTF-8字符串转换为GBK编码
+	reader := transform.NewReader(strings.NewReader(text), simplifiedchinese.GBK.NewEncoder())
+	gbkData, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("GBK编码转换失败: %v", err)
+	}
+	return gbkData, nil
 }
 
 // convertToUTF8 将字节数组从GBK编码转换为UTF-8字符串

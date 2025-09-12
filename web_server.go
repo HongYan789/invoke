@@ -1639,7 +1639,20 @@ const indexHTML = `<!DOCTYPE html>
                         });
                     }
                 } catch (e) {
-                    parameters = [paramsPart.trim()];
+                    // JSON.parse失败时，使用parseParametersFromExpression分割参数
+                    const splitParams = parseParametersFromExpression(paramsPart);
+                    parameters = splitParams.map(param => {
+                        try {
+                            return JSON.parse(param);
+                        } catch (parseErr) {
+                            // 如果参数被引号包围，去除引号
+                            if ((param.startsWith('"') && param.endsWith('"')) || 
+                                (param.startsWith("'") && param.endsWith("'"))) {
+                                return param.slice(1, -1);
+                            }
+                            return param;
+                        }
+                    });
                 }
             }
             return { serviceName, methodName, parameters };
@@ -2373,9 +2386,35 @@ const indexHTML = `<!DOCTYPE html>
                 }
             }
             
-            // 填充注册中心地址
-            const registryEl = document.getElementById('registry');
-            if (registryEl) registryEl.value = item.registry || '';
+            // 填充注册中心地址 - 解析URL格式
+            if (item.registry) {
+                const registryUrl = item.registry;
+                let registryType = 'zookeeper';
+                let registryAddress = registryUrl;
+                
+                // 解析注册中心URL格式 (如: zookeeper://127.0.0.1:2181)
+                if (registryUrl.includes('://')) {
+                    const parts = registryUrl.split('://');
+                    if (parts.length === 2) {
+                        registryType = parts[0];
+                        registryAddress = parts[1];
+                    }
+                }
+                
+                // 设置注册中心类型下拉框
+                const registryTypeEl = document.getElementById('registryType');
+                if (registryTypeEl) {
+                    registryTypeEl.value = registryType;
+                    // 触发类型变化事件以更新相关UI
+                    onRegistryTypeChange();
+                }
+                
+                // 设置注册中心地址
+                const registryAddressEl = document.getElementById('registryAddress');
+                if (registryAddressEl) {
+                    registryAddressEl.value = registryAddress;
+                }
+            }
             
             // 填充调用结果
             if (item.result) {
@@ -2447,8 +2486,34 @@ const indexHTML = `<!DOCTYPE html>
             }
             
             // 重新设置注册中心地址（因为toggleCallFormat可能会重置它）
-            const registryEl3 = document.getElementById('registry');
-            if (registryEl3) registryEl3.value = item.registry || '';
+            if (item.registry) {
+                const registryUrl = item.registry;
+                let registryType = 'zookeeper';
+                let registryAddress = registryUrl;
+                
+                // 解析注册中心URL格式 (如: zookeeper://127.0.0.1:2181)
+                if (registryUrl.includes('://')) {
+                    const parts = registryUrl.split('://');
+                    if (parts.length === 2) {
+                        registryType = parts[0];
+                        registryAddress = parts[1];
+                    }
+                }
+                
+                // 设置注册中心类型下拉框
+                const registryTypeEl = document.getElementById('registryType');
+                if (registryTypeEl) {
+                    registryTypeEl.value = registryType;
+                    // 触发类型变化事件以更新相关UI
+                    onRegistryTypeChange();
+                }
+                
+                // 设置注册中心地址
+                const registryAddressEl = document.getElementById('registryAddress');
+                if (registryAddressEl) {
+                    registryAddressEl.value = registryAddress;
+                }
+            }
         }
         
         function copyResult() {
