@@ -223,6 +223,12 @@ go mod tidy
 # 构建当前平台版本
 go build -o invoke .
 
+# 遇到ARM64兼容性问题，需要临时移除resource.syso文件并重新构建。
+mv resource.syso resource.syso.bak && go build -o invoke .
+
+# 构建成功后，恢复resource.syso文件以保持项目完整性。
+mv resource.syso.bak resource.syso 
+
 # 或使用 Makefile
 make build
 ```

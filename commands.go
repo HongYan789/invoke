@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -267,12 +268,66 @@ func runConfigShowCommand(cmd *cobra.Command, args []string) error {
 }
 
 // parseParams 解析命令行参数
+// removeLSuffix 移除JSON字符串中数字的L后缀
+func removeLSuffix(jsonStr string) string {
+	// 使用正则表达式匹配数字后面的L后缀
+	// 匹配模式：数字(可能包含小数点)后跟L，但L后面必须是非字母数字字符或字符串结尾
+	re := regexp.MustCompile(`(\d+(?:\.\d+)?)L([^a-zA-Z0-9]|$)`)
+	return re.ReplaceAllString(jsonStr, "${1}${2}")
+}
+
+// hasLSuffixBigInt 检查参数是否包含L后缀的大整数
+func hasLSuffixBigInt(param string) bool {
+	// 检查是否包含可能导致精度丢失的大整数L后缀
+	re := regexp.MustCompile(`\d{16,}L`) // 16位及以上的数字后跟L
+	return re.MatchString(param)
+}
+
+// processLSuffixParam 处理包含L后缀的参数，保持大整数精度
+func processLSuffixParam(param string) interface{} {
+	// 使用正则表达式找到所有大整数L后缀并替换为字符串格式
+	re := regexp.MustCompile(`(\d{16,})L([^a-zA-Z0-9]|$)`)
+	processedParam := re.ReplaceAllStringFunc(param, func(match string) string {
+		// 提取数字部分
+		numMatch := regexp.MustCompile(`(\d{16,})L`).FindStringSubmatch(match)
+		if len(numMatch) >= 2 {
+			number := numMatch[1]
+			// 替换为字符串格式，保持原有的分隔符
+			suffix := match[len(numMatch[0]):]
+			return `"` + number + `"` + suffix
+		}
+		return match
+	})
+	
+	// 尝试解析为JSON
+	decoder := json.NewDecoder(strings.NewReader(processedParam))
+	decoder.UseNumber()
+	var jsonValue interface{}
+	if err := decoder.Decode(&jsonValue); err == nil {
+		return convertJSONNumber(jsonValue)
+	}
+	
+	// 如果解析失败，返回原始参数
+	return param
+}
+
 func parseParams(params []string, types []string) ([]interface{}, error) {
 	result := make([]interface{}, len(params))
 
 	for i, param := range params {
+		// 检查原始参数是否包含L后缀的大整数
+		if hasLSuffixBigInt(param) {
+			// 对于包含L后缀的大整数，特殊处理以保持精度
+			processed := processLSuffixParam(param)
+			result[i] = processed
+			continue
+		}
+		
+		// 预处理：移除JSON中的L后缀
+		processedParam := removeLSuffix(param)
+		
 		// 尝试解析为JSON，使用json.Number保持精度
-		decoder := json.NewDecoder(strings.NewReader(param))
+		decoder := json.NewDecoder(strings.NewReader(processedParam))
 		decoder.UseNumber()
 		var jsonValue interface{}
 		if err := decoder.Decode(&jsonValue); err == nil {

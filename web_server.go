@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -170,11 +171,16 @@ func (ws *WebServer) Start() error {
 // handleIndex 处理首页
 func (ws *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 添加缓存控制头，防止浏览器缓存HTML页面
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	t := template.Must(template.New("index").Parse(indexHTML))
 	data := map[string]interface{}{
 		"Registry": ws.registry,
 		"App":      ws.app,
 		"Timeout":  ws.timeout,
+		"Version":  time.Now().Unix(), // 添加时间戳作为版本号
 	}
 	t.Execute(w, data)
 }
@@ -203,50 +209,33 @@ func (ws *WebServer) handleInvoke(w http.ResponseWriter, r *http.Request) {
 
 	color.Cyan("[WEB] 解析请求成功 - 服务: %s, 方法: %s, 参数: %s", req.ServiceName, req.MethodName, string(req.Parameters))
 
-	// 解析参数，保持Long类型精度
-	var params []interface{}
-	if len(req.Parameters) > 0 {
-		// 尝试解析为参数数组
-		var paramArray []interface{}
-		decoder := json.NewDecoder(strings.NewReader(string(req.Parameters)))
-		decoder.UseNumber()
-		err := decoder.Decode(&paramArray)
-		if err == nil {
-			// 成功解析为数组
-			params = convertJSONNumbers(paramArray)
-			color.Green("[WEB] 解析为多参数格式，参数数量: %d", len(params))
-		} else {
-			// 如果不是数组格式，尝试解析为单个参数
-			var singleParam interface{}
-			decoder = json.NewDecoder(strings.NewReader(string(req.Parameters)))
-			decoder.UseNumber()
-			err = decoder.Decode(&singleParam)
-			if err == nil {
-				params = []interface{}{convertJSONNumber(singleParam)}
-				color.Green("[WEB] 解析为单参数格式，参数数量: 1")
-			} else {
-				// 如果都失败了，作为字符串处理
-				params = []interface{}{string(req.Parameters)}
-				color.Yellow("[WEB] 参数解析失败，作为字符串处理: %s", string(req.Parameters))
-			}
-		}
+	// 使用统一的参数处理中间件，支持BigInt和各种类型转换
+	params, err := ws.processParametersWithBigIntSupport(req.Parameters)
+	if err != nil {
+		color.Red("[WEB] 参数处理失败: %v", err)
+		ws.writeError(w, fmt.Sprintf("参数处理失败: %v", err))
+		return
 	}
 
 	color.Blue("[WEB] 开始执行Dubbo调用: %s.%s", req.ServiceName, req.MethodName)
 	// 记录开始时间
 	startTime := time.Now()
 	// 执行调用
-	result, err := ws.executeInvoke(req)
+	result, err := ws.executeInvoke(req, params)
 	// 计算耗时
 	duration := time.Since(startTime).Milliseconds()
 	color.Cyan("[WEB] 调用耗时: %d ms", duration)
 
 	// 保存调用历史
+	// 直接使用解析后的参数，这样可以保存正确的对象格式
+	historyParams := safeCopyParameters(params)
+	color.Green("[WEB] 历史记录保存解析后的参数格式")
+
 	history := CallHistory{
 		ID:          fmt.Sprintf("%d", time.Now().UnixNano()),
 		ServiceName: req.ServiceName,
 		MethodName:  req.MethodName,
-		Parameters:  safeCopyParameters(params), // 使用解析后的参数数组，保持Long类型精度
+		Parameters:  historyParams, // 使用正确处理的参数
 		Types:       req.Types,
 		Registry:    req.Registry,
 		App:         req.App,
@@ -438,12 +427,24 @@ func (ws *WebServer) handleExample(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseParameter 解析参数，支持JSON格式的智能类型推断
+// removeLSuffix 移除JSON字符串中数字的L后缀
+func (ws *WebServer) removeLSuffix(jsonStr string) string {
+	// 使用正则表达式匹配数字后面的L后缀
+	// 匹配模式：数字(可能包含小数点)后跟L，但L后面必须是非字母数字字符或字符串结尾
+	re := regexp.MustCompile(`(\d+(?:\.\d+)?)L([^a-zA-Z0-9]|$)`)
+	return re.ReplaceAllString(jsonStr, "${1}${2}")
+}
+
 func (ws *WebServer) parseParameter(param string) (interface{}, error) {
 	color.Cyan("[WEB] 开始解析参数: %s", param)
 
 	// 去除首尾空格
 	param = strings.TrimSpace(param)
 	color.Cyan("[WEB] 去除空格后的参数: %s", param)
+
+	// 预处理：移除JSON中的L后缀
+	param = ws.removeLSuffix(param)
+	color.Cyan("[WEB] 移除L后缀后的参数: %s", param)
 
 	// 如果是空字符串，返回nil
 	if param == "" {
@@ -510,7 +511,7 @@ func (ws *WebServer) parseParameter(param string) (interface{}, error) {
 }
 
 // executeInvoke 执行调用
-func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
+func (ws *WebServer) executeInvoke(req InvokeRequest, params []interface{}) (interface{}, error) {
 	color.Blue("[WEB] 开始执行Dubbo调用: %s.%s", req.ServiceName, req.MethodName)
 	color.Cyan("[WEB] 调用参数: Registry=%s, App=%s, Timeout=%dms", req.Registry, req.App, req.Timeout)
 
@@ -522,25 +523,8 @@ func (ws *WebServer) executeInvoke(req InvokeRequest) (interface{}, error) {
 	}
 	color.Green("[WEB] Dubbo客户端配置创建成功")
 
-	// 解析字符串参数为interface{}类型
-	color.Blue("[WEB] 开始解析调用参数")
-	var params []interface{}
-	if len(req.Parameters) > 0 {
-		// 尝试解析为参数数组
-		var paramArray []interface{}
-		decoder := json.NewDecoder(strings.NewReader(string(req.Parameters)))
-		decoder.UseNumber()
-		err := decoder.Decode(&paramArray)
-		if err != nil {
-			color.Red("[WEB] 参数解析失败: %v", err)
-			return nil, fmt.Errorf("参数解析失败: %v", err)
-		}
-
-		// 将json.Number转换为适当的类型
-		params = convertJSONNumbers(paramArray)
-		color.Green("[WEB] 解析参数完成，参数数量: %d", len(params))
-	}
-	color.Green("[WEB] 参数解析完成，最终参数数量: %d", len(params))
+	// 使用传入的已解析参数
+	color.Green("[WEB] 使用已解析的参数，参数数量: %d", len(params))
 
 	// 构建并打印dubbo invoke命令，方便用户验证
 	invokeCmd := ws.buildDubboInvokeCommand(req.ServiceName, req.MethodName, params)
@@ -749,6 +733,106 @@ func convertJSONNumbers(params []interface{}) []interface{} {
 	return result
 }
 
+// processParametersWithBigIntSupport 统一的参数处理中间件，支持BigInt和各种类型转换
+func (ws *WebServer) processParametersWithBigIntSupport(rawParams json.RawMessage) ([]interface{}, error) {
+	if len(rawParams) == 0 {
+		return []interface{}{}, nil
+	}
+
+	// 移除Java long类型的L后缀
+	processedParams := ws.removeLSuffix(string(rawParams))
+	color.Cyan("[WEB] 处理后的参数: %s", processedParams)
+
+	// 首先尝试解析为参数数组
+	var paramArray []interface{}
+	decoder := json.NewDecoder(strings.NewReader(processedParams))
+	decoder.UseNumber()
+	err := decoder.Decode(&paramArray)
+	if err == nil {
+		// 成功解析为数组，应用类型转换
+		result := convertJSONNumbers(paramArray)
+		color.Green("[WEB] 解析为多参数格式，参数数量: %d", len(result))
+		return result, nil
+	}
+
+	// 如果不是数组格式，尝试解析为单个参数
+	var singleParam interface{}
+	decoder = json.NewDecoder(strings.NewReader(processedParams))
+	decoder.UseNumber()
+	err = decoder.Decode(&singleParam)
+	if err == nil {
+		result := []interface{}{convertJSONNumber(singleParam)}
+		color.Green("[WEB] 解析为单参数格式，参数数量: 1")
+		return result, nil
+	}
+
+	// 如果JSON解析失败，检查是否为表达式格式的参数字符串
+	if processedParams != "" {
+		// 检查是否为JSON字符串格式
+		if strings.HasPrefix(processedParams, `"`) && strings.HasSuffix(processedParams, `"`) {
+			// 去除外层引号
+			unquoted := processedParams[1 : len(processedParams)-1]
+			// 尝试将去除引号后的内容再次解析为数组
+			var innerArray []interface{}
+			decoder := json.NewDecoder(strings.NewReader(unquoted))
+			decoder.UseNumber()
+			err := decoder.Decode(&innerArray)
+			if err == nil {
+				// 成功解析为数组
+				result := convertJSONNumbers(innerArray)
+				color.Green("[WEB] 解析为JSON字符串内的数组格式，参数数量: %d", len(result))
+				return result, nil
+			}
+
+			// 如果不是数组，尝试使用表达式解析器解析参数
+			color.Yellow("[WEB] 尝试使用表达式解析器解析参数: %s", unquoted)
+			params := parseParametersFromExpression(unquoted)
+			if len(params) > 0 {
+				result := make([]interface{}, len(params))
+				for i, param := range params {
+					// 尝试解析每个参数
+					if parsed, err := ws.parseParameter(param); err == nil {
+						result[i] = parsed
+					} else {
+						result[i] = param
+					}
+				}
+				color.Green("[WEB] 表达式解析成功，参数数量: %d", len(result))
+				return result, nil
+			}
+
+			// 如果表达式解析也失败，作为单个字符串参数
+			result := []interface{}{unquoted}
+			color.Yellow("[WEB] 解析为JSON字符串格式，参数数量: 1")
+			return result, nil
+		}
+
+		// 尝试使用表达式解析器解析参数（处理非引号包围的情况）
+		color.Yellow("[WEB] 尝试使用表达式解析器解析参数: %s", processedParams)
+		params := parseParametersFromExpression(processedParams)
+		if len(params) > 0 {
+			result := make([]interface{}, len(params))
+			for i, param := range params {
+				// 尝试解析每个参数
+				if parsed, err := ws.parseParameter(param); err == nil {
+					result[i] = parsed
+				} else {
+					result[i] = param
+				}
+			}
+			color.Green("[WEB] 表达式解析成功，参数数量: %d", len(result))
+			return result, nil
+		}
+
+		// 作为普通字符串处理
+		result := []interface{}{processedParams}
+		color.Yellow("[WEB] 参数解析失败，作为字符串处理: %s", processedParams)
+		return result, nil
+	}
+
+	return []interface{}{}, nil
+}
+
 // convertJSONNumber 递归转换json.Number类型
 func convertJSONNumber(value interface{}) interface{} {
 	switch v := value.(type) {
@@ -758,7 +842,6 @@ func convertJSONNumber(value interface{}) interface{} {
 
 		if len(numStr) > 15 {
 			// 超过15位数字，直接返回字符串避免精度丢失
-
 			return numStr
 		}
 
@@ -776,6 +859,9 @@ func convertJSONNumber(value interface{}) interface{} {
 		}
 		// 如果都失败，返回原始字符串
 		return numStr
+	case string:
+		// 处理BigInt格式的字符串（来自前端JSONBig.parse）
+		return convertBigIntString(v)
 	case []interface{}:
 		result := make([]interface{}, len(v))
 		for i, item := range v {
@@ -791,6 +877,31 @@ func convertJSONNumber(value interface{}) interface{} {
 	default:
 		return value
 	}
+}
+
+// convertBigIntString 处理来自前端BigInt的字符串格式
+func convertBigIntString(s string) interface{} {
+	// 检查是否为纯数字字符串（可能是BigInt）
+	if matched, _ := regexp.MatchString(`^-?\d+$`, s); matched {
+		// 尝试转换为int64
+		if intVal, err := strconv.ParseInt(s, 10, 64); err == nil {
+			// 检查是否超过JavaScript安全整数范围
+			if intVal > 9007199254740991 || intVal < -9007199254740991 {
+				return s // 保持字符串格式避免精度丢失
+			}
+			return intVal
+		}
+		// 如果无法转换为int64，保持字符串格式
+		return s
+	}
+	// 检查是否为浮点数字符串
+	if matched, _ := regexp.MatchString(`^-?\d+\.\d+$`, s); matched {
+		if floatVal, err := strconv.ParseFloat(s, 64); err == nil {
+			return floatVal
+		}
+	}
+	// 不是数字格式，返回原始字符串
+	return s
 }
 
 func safeCopyParameters(params []interface{}) []interface{} {
@@ -1230,6 +1341,104 @@ const indexHTML = `<!DOCTYPE html>
             max-width: 100%;
             overflow-x: auto;
         }
+
+        /* JSON树形展示样式 */
+        .json-tree {
+            font-family: monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            color: #333;
+            white-space: normal;
+            word-break: normal;
+            overflow-wrap: normal;
+        }
+
+        .json-tree-item {
+            margin: 0;
+            padding: 0;
+        }
+
+        .json-tree-toggle {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 4px;
+            cursor: pointer;
+            user-select: none;
+            font-size: 10px;
+            line-height: 12px;
+            text-align: center;
+            color: #666;
+            border: 1px solid #ccc;
+            background: #fff;
+            border-radius: 2px;
+            vertical-align: middle;
+        }
+
+        .json-tree-toggle:hover {
+            background: #f0f0f0;
+            border-color: #999;
+        }
+
+        .json-tree-toggle.collapsed::before {
+            content: '▶';
+        }
+
+        .json-tree-toggle.expanded::before {
+            content: '▼';
+        }
+
+        .json-tree-toggle.leaf {
+            visibility: hidden;
+        }
+
+        .json-tree-key {
+            color: #0066cc;
+            font-weight: bold;
+        }
+
+        .json-tree-string {
+            color: #008000;
+        }
+
+        .json-tree-number {
+            color: #ff6600;
+        }
+
+        .json-tree-boolean {
+            color: #cc0066;
+            font-style: italic;
+        }
+
+        .json-tree-null {
+            color: #999;
+            font-style: italic;
+        }
+
+        .json-tree-bracket {
+            color: #666;
+            font-weight: bold;
+        }
+
+        .json-tree-children {
+            margin-left: 20px;
+            border-left: 1px dotted #ccc;
+            padding-left: 10px;
+        }
+
+        .json-tree-children.collapsed {
+            display: none;
+        }
+
+        .json-tree-item-line {
+            padding: 1px 0;
+        }
+
+        .json-tree-summary {
+            color: #999;
+            font-style: italic;
+            margin-left: 4px;
+        }
         .success {
             border-color: #4caf50;
             background-color: #f1f8e9;
@@ -1415,7 +1624,7 @@ const indexHTML = `<!DOCTYPE html>
                             <label for="callFormat">调用格式:</label>
                             <select id="callFormat" onchange="toggleCallFormat()">
                                 <option value="traditional">传统格式 (服务名 + 方法名)</option>
-                                <option value="expression">表达式格式 (service.method(params))</option>
+                                <option value="expression" selected>表达式格式 (service.method(params))</option>
                             </select>
                         </div>
                         <div id="traditionalFormat">
@@ -1473,7 +1682,7 @@ const indexHTML = `<!DOCTYPE html>
                             </div>
                             <div class="form-group">
                                 <label for="expression">调用表达式: <span style="font-size: 0.8em; color: #5c6bc0;">(service.method(params))</span></label>
-                                <textarea id="expression" placeholder='com.example.UserService.getUserById(123)'>com.example.UserService.getUserById(123)</textarea>
+                                <textarea id="expression" placeholder='invoke com.example.UserService.getUserById(123)'>invoke com.example.UserService.getUserById(123)</textarea>
                             </div>
                         </div>
                         <div id="traditionalTypes" class="form-group">
@@ -1533,8 +1742,23 @@ const indexHTML = `<!DOCTYPE html>
                 <h2>
                     <span>调用结果</span>
                     <div class="result-actions">
+                        <button class="icon-btn compress" onclick="toggleJsonFormat()" title="压缩/美化JSON">
+                            🗜️
+                        </button>
+                        <button class="icon-btn line-numbers" onclick="toggleLineNumbers()" title="显示/隐藏行号">
+                            🔢
+                        </button>
+                        <button class="icon-btn expand-all" onclick="toggleExpandAll()" title="全部展开/收缩">
+                            📂
+                        </button>
                         <button class="icon-btn copy" onclick="copyResult()" title="复制结果">
                             📋
+                        </button>
+                        <button class="icon-btn save" onclick="saveResult()" title="保存结果">
+                            💾
+                        </button>
+                        <button class="icon-btn clear" onclick="clearResult()" title="清空结果">
+                            🗑️
                         </button>
                     </div>
                 </h2>
@@ -1547,6 +1771,12 @@ const indexHTML = `<!DOCTYPE html>
         </div>
     </div>
     <script>
+        // 全局变量存储原始JSON数据用于复制
+        let originalJsonData = null;
+        let isJsonCompressed = false;
+        let showLineNumbers = false;
+        let isAllExpanded = true;
+        
         function toggleCallFormat() {
             const callFormatEl = document.getElementById('callFormat');
             if (!callFormatEl) return;
@@ -1620,37 +1850,38 @@ const indexHTML = `<!DOCTYPE html>
             }
             let parameters = [];
             if (paramsPart.trim()) {
+                // 先应用removeLSuffix处理，确保L后缀被正确移除
+                const processedParamsPart = removeLSuffix(paramsPart.trim());
+                
                 try {
-                    if (paramsPart.trim().startsWith('[')) {
-                        parameters = JSON.parse(paramsPart);
+                    // 首先尝试将整个参数部分作为JSON数组解析（只有当它是完整的JSON数组格式时）
+                    if (processedParamsPart.startsWith('[') && processedParamsPart.endsWith(']')) {
+                        try {
+                            parameters = JSONBig.parse(processedParamsPart);
+                        } catch (e) {
+                            // 如果解析失败，说明不是有效的JSON数组，使用参数分割逻辑
+                            throw e;
+                        }
                     } else {
-                        // 使用智能参数分割逻辑
-                        const paramStrings = parseParametersFromExpression(paramsPart.trim());
-                        parameters = paramStrings.map(paramStr => {
-                            try {
-                                return JSON.parse(paramStr);
-                            } catch (e) {
-                                // 如果不是JSON格式，去除引号后返回字符串
-                                if (paramStr.startsWith('"') && paramStr.endsWith('"')) {
-                                    return paramStr.substring(1, paramStr.length - 1);
-                                }
-                                return paramStr;
-                            }
-                        });
+                        // 不是完整的JSON数组格式，使用参数分割逻辑
+                        throw new Error('Not a complete JSON array');
                     }
                 } catch (e) {
-                    // JSON.parse失败时，使用parseParametersFromExpression分割参数
-                    const splitParams = parseParametersFromExpression(paramsPart);
-                    parameters = splitParams.map(param => {
+                    // 使用智能参数分割逻辑
+                    const paramStrings = parseParametersFromExpression(processedParamsPart);
+                    parameters = paramStrings.map(paramStr => {
                         try {
-                            return JSON.parse(param);
-                        } catch (parseErr) {
-                            // 如果参数被引号包围，去除引号
-                            if ((param.startsWith('"') && param.endsWith('"')) || 
-                                (param.startsWith("'") && param.endsWith("'"))) {
-                                return param.slice(1, -1);
+                            return JSONBig.parse(paramStr);
+                        } catch (e) {
+                            // 如果不是JSON格式，去除引号后返回字符串
+                            if (paramStr.startsWith('"') && paramStr.endsWith('"')) {
+                                return paramStr.substring(1, paramStr.length - 1);
                             }
-                            return param;
+                            // 尝试解析为数字
+                            if (!isNaN(paramStr) && !isNaN(parseFloat(paramStr))) {
+                                return parseFloat(paramStr);
+                            }
+                            return paramStr;
                         }
                     });
                 }
@@ -1721,6 +1952,58 @@ const indexHTML = `<!DOCTYPE html>
             
             return params;
         }
+        // JSON-BigInt 库的简化实现，用于处理大整数
+        const JSONBig = {
+            parse: function(text, reviver) {
+                // 首先移除Java long字面量的L后缀
+                let cleanText = text.replace(/(\d+(?:\.\d+)?)L([^a-zA-Z0-9]|$)/g, '$1$2');
+                
+                // 在JSON.parse之前，将大整数转换为字符串，避免精度丢失
+                // 匹配超过15位的整数（JavaScript安全整数范围）
+                cleanText = cleanText.replace(/([^"\w]|^)(-?\d{16,})([^"\w]|$)/g, function(match, prefix, number, suffix) {
+                    return prefix + '"' + number + '"' + suffix;
+                });
+                
+                try {
+                    return JSON.parse(cleanText, function(key, value) {
+                        // 检查是否为大整数字符串（被我们转换的）
+                        if (typeof value === 'string' && /^-?\d{16,}$/.test(value)) {
+                            // 超过15位的整数，保持为字符串避免精度丢失
+                            return value;
+                        }
+                        
+                        // 检查是否为超出安全范围的数字
+                        if (typeof value === 'number') {
+                            if (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER) {
+                                return value.toString();
+                            }
+                        }
+                        
+                        return reviver ? reviver(key, value) : value;
+                    });
+                } catch (error) {
+                    // 降级处理：如果解析失败，尝试原始字符串
+                    console.warn('JSON解析失败，使用原始字符串:', error);
+                    return cleanText;
+                }
+            },
+            
+            stringify: function(value, replacer, space) {
+                return JSON.stringify(value, function(key, val) {
+                    // 处理大整数，确保序列化时保持精度
+                    if (typeof val === 'bigint') {
+                        return val.toString();
+                    }
+                    return replacer ? replacer(key, val) : val;
+                }, space);
+            }
+        };
+        
+        // 兼容性函数：保持向后兼容
+        function removeLSuffix(jsonStr) {
+            return jsonStr.replace(/(\d+(?:\.\d+)?)L([^a-zA-Z0-9]|$)/g, '$1$2');
+        }
+        
         function invokeService() {
             const format = document.getElementById('callFormat').value;
             let serviceName, methodName, parameters;
@@ -1742,8 +2025,8 @@ const indexHTML = `<!DOCTYPE html>
                 const paramsText = document.getElementById('parameters').value.trim();
                 if (!serviceName || !methodName) { alert('请输入服务名和方法名'); return; }
                 try {
-                    // 解析参数为真正的JavaScript对象/数组，而不是字符串
-                    parameters = paramsText ? JSON.parse(paramsText) : [];
+                    // 使用JSONBig解析参数，支持大整数和Java long类型
+                    parameters = paramsText ? JSONBig.parse(paramsText) : [];
                 } catch (e) { alert('参数格式错误，请使用JSON数组格式: ' + e.message); return; }
             }
             // 获取参数类型信息
@@ -1752,12 +2035,21 @@ const indexHTML = `<!DOCTYPE html>
                 types = document.getElementById('types').value.trim();
             } else {
                 // 表达式格式：根据参数自动推断类型
-                if (parameters && parameters.length > 0) {
+                if (parameters && Array.isArray(parameters) && parameters.length > 0) {
                     types = parameters.map(param => {
                         if (typeof param === 'string') {
                             return 'java.lang.String';
                         } else if (typeof param === 'number') {
-                            return Number.isInteger(param) ? 'java.lang.Integer' : 'java.lang.Double';
+                            if (Number.isInteger(param)) {
+                                // 检查是否超出Integer范围，如果超出则使用Long
+                                if (param > 2147483647 || param < -2147483648) {
+                                    return 'java.lang.Long';
+                                } else {
+                                    return 'java.lang.Integer';
+                                }
+                            } else {
+                                return 'java.lang.Double';
+                            }
                         } else if (typeof param === 'boolean') {
                             return 'java.lang.Boolean';
                         } else if (Array.isArray(param)) {
@@ -1818,7 +2110,7 @@ const indexHTML = `<!DOCTYPE html>
             fetch('/api/invoke', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(request)
+                body: JSONBig.stringify(request)
             })
             .then(response => {
                 if (response.ok) {
@@ -2095,24 +2387,31 @@ const indexHTML = `<!DOCTYPE html>
                             }
                             return value;
                         });
-                        result.textContent = JSON.stringify(parsed, null, 2);
+                        // 使用JSON树形展示
+                        renderJsonTree(parsed, result);
                     } catch (e) {
                         // 如果不是JSON字符串，直接显示
+                        result.className = 'result';
                         result.textContent = data.data;
+                        originalJsonData = data.data;
                     }
                 } else if (typeof data.data === 'object' && data.data !== null) {
-                    // 如果是对象或数组，格式化显示，并处理其中的大整数
+                    // 如果是对象或数组，使用JSON树形展示，并处理其中的大整数
                     const processedData = processLargeIntegers(data.data);
-                    result.textContent = JSON.stringify(processedData, null, 2);
+                    renderJsonTree(processedData, result);
                 } else {
                     // 如果是基础数据类型（数字、布尔值、null等），直接显示
+                    result.className = 'result';
                     result.textContent = String(data.data);
+                    originalJsonData = data.data;
                 }
             } else if (!data.success && data.error) {
+                result.className = 'result';
                 result.textContent = data.error;
+                originalJsonData = data.error;
             } else {
                 // 兼容旧格式或其他情况
-                result.textContent = JSON.stringify(data, null, 2);
+                renderJsonTree(data, result);
             }
             
             // 更新结果面板标题的状态指示器
@@ -2207,6 +2506,120 @@ const indexHTML = `<!DOCTYPE html>
             
             return obj;
         }
+
+        // JSON树形展示功能
+        function createJsonTree(data, key = null, isRoot = true) {
+            const container = document.createElement('div');
+            container.className = 'json-tree-item';
+            
+            if (data === null) {
+                container.innerHTML = (key ? '<span class="json-tree-key">"' + key + '"</span>: ' : '') + '<span class="json-tree-null">null</span>';
+                return container;
+            }
+            
+            if (typeof data === 'string') {
+                container.innerHTML = (key ? '<span class="json-tree-key">"' + key + '"</span>: ' : '') + '<span class="json-tree-string">"' + escapeHtml(data) + '"</span>';
+                return container;
+            }
+            
+            if (typeof data === 'number') {
+                container.innerHTML = (key ? '<span class="json-tree-key">"' + key + '"</span>: ' : '') + '<span class="json-tree-number">' + data + '</span>';
+                return container;
+            }
+            
+            if (typeof data === 'boolean') {
+                container.innerHTML = (key ? '<span class="json-tree-key">"' + key + '"</span>: ' : '') + '<span class="json-tree-boolean">' + data + '</span>';
+                return container;
+            }
+            
+            const isArray = Array.isArray(data);
+            const entries = isArray ? data.map((item, index) => [index, item]) : Object.entries(data);
+            const isEmpty = entries.length === 0;
+            
+            const itemLine = document.createElement('div');
+            itemLine.className = 'json-tree-item-line';
+            
+            if (isEmpty) {
+                itemLine.innerHTML = (key ? '<span class="json-tree-key">"' + key + '"</span>: ' : '') + '<span class="json-tree-bracket">' + (isArray ? '[]' : '{}') + '</span>';
+                container.appendChild(itemLine);
+                return container;
+            }
+            
+            const toggle = document.createElement('span');
+            toggle.className = 'json-tree-toggle expanded';
+            
+            const keySpan = key ? '<span class="json-tree-key">"' + key + '"</span>: ' : '';
+            const openBracket = '<span class="json-tree-bracket">' + (isArray ? '[' : '{') + '</span>';
+            const summary = '<span class="json-tree-summary">' + entries.length + ' ' + (isArray ? 'items' : 'properties') + '</span>';
+            
+            itemLine.innerHTML = keySpan + openBracket + summary;
+            itemLine.insertBefore(toggle, itemLine.firstChild);
+            
+            const childrenContainer = document.createElement('div');
+            childrenContainer.className = 'json-tree-children';
+            
+            entries.forEach(([childKey, childValue], index) => {
+                const childElement = createJsonTree(childValue, childKey, false);
+                if (index < entries.length - 1) {
+                    const comma = document.createElement('span');
+                    comma.innerHTML = ',';
+                    comma.style.color = '#666';
+                    childElement.appendChild(comma);
+                }
+                childrenContainer.appendChild(childElement);
+            });
+            
+            const closeLine = document.createElement('div');
+            closeLine.className = 'json-tree-item-line';
+            closeLine.innerHTML = '<span class="json-tree-bracket">' + (isArray ? ']' : '}') + '</span>';
+            childrenContainer.appendChild(closeLine);
+            
+            toggle.addEventListener('click', function() {
+                if (toggle.classList.contains('expanded')) {
+                    toggle.classList.remove('expanded');
+                    toggle.classList.add('collapsed');
+                    childrenContainer.classList.add('collapsed');
+                    itemLine.innerHTML = keySpan + openBracket + '<span class="json-tree-bracket">' + (isArray ? '...]' : '...}') + '</span>' + summary;
+                    itemLine.insertBefore(toggle, itemLine.firstChild);
+                } else {
+                    toggle.classList.remove('collapsed');
+                    toggle.classList.add('expanded');
+                    childrenContainer.classList.remove('collapsed');
+                    itemLine.innerHTML = keySpan + openBracket + summary;
+                    itemLine.insertBefore(toggle, itemLine.firstChild);
+                }
+            });
+            
+            container.appendChild(itemLine);
+            container.appendChild(childrenContainer);
+            
+            return container;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function renderJsonTree(data, container) {
+            container.innerHTML = '';
+            container.className = 'result json-tree';
+            
+            // 存储原始JSON数据用于复制功能
+            originalJsonData = data;
+            
+            try {
+                const tree = createJsonTree(data);
+                container.appendChild(tree);
+            } catch (error) {
+                container.className = 'result';
+                container.textContent = 'JSON树形展示错误: ' + error.message + '\n\n原始数据:\n' + JSON.stringify(data, null, 2);
+                // 错误情况下也要存储数据
+                originalJsonData = data;
+            }
+        }
+
         function downloadHistory() {
             fetch('/api/history')
             .then(response => response.json())
@@ -2447,12 +2860,14 @@ const indexHTML = `<!DOCTYPE html>
                             }
                             return value;
                         });
-                        resultElement.textContent = JSON.stringify(parsed, null, 2);
+                        // 使用JSON树形展示
+                        renderJsonTree(parsed, resultElement);
+                        resultElement.classList.add(item.success ? 'success' : 'error');
                     } catch (e) {
                         // 如果不是JSON格式，直接显示原内容
+                        resultElement.className = 'result ' + (item.success ? 'success' : 'error');
                         resultElement.textContent = item.result;
                     }
-                    resultElement.className = 'result ' + (item.success ? 'success' : 'error');
                     
                     // 更新结果面板标题
                     const resultPanelTitle = document.querySelector('.result-panel h2');
@@ -2517,15 +2932,37 @@ const indexHTML = `<!DOCTYPE html>
         }
         
         function copyResult() {
-            const resultElement = document.getElementById('result');
-            if (!resultElement || !resultElement.textContent.trim()) {
+            // 优先使用存储的原始JSON数据
+            let textToCopy = '';
+            
+            if (originalJsonData !== null) {
+                // 使用存储的原始JSON数据，格式化输出
+                textToCopy = JSON.stringify(originalJsonData, null, 2);
+            } else {
+                // 如果没有存储的数据，回退到使用元素的文本内容
+                const resultElement = document.getElementById('result');
+                if (!resultElement) {
+                    alert('暂无结果数据可复制');
+                    return;
+                }
+                
+                // 如果是树形展示，提示无法复制
+                if (resultElement.classList.contains('json-tree')) {
+                    alert('暂无结果数据可复制');
+                    return;
+                } else {
+                    textToCopy = resultElement.textContent.trim();
+                }
+            }
+            
+            if (!textToCopy) {
                 alert('暂无结果数据可复制');
                 return;
             }
             
             // 创建临时文本区域用于复制
             const textarea = document.createElement('textarea');
-            textarea.value = resultElement.textContent;
+            textarea.value = textToCopy;
             document.body.appendChild(textarea);
             textarea.select();
             
@@ -2534,7 +2971,7 @@ const indexHTML = `<!DOCTYPE html>
                 alert('结果已复制到剪贴板');
             } catch (err) {
                 // 如果复制失败，提供下载选项
-                const blob = new Blob([resultElement.textContent], { type: 'application/json' });
+                const blob = new Blob([textToCopy], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -2546,6 +2983,142 @@ const indexHTML = `<!DOCTYPE html>
                 alert('复制失败，已自动下载结果文件');
             } finally {
                 document.body.removeChild(textarea);
+            }
+        }
+
+        // 压缩/美化JSON显示切换
+        function toggleJsonFormat() {
+            if (!originalJsonData) {
+                alert('暂无JSON数据');
+                return;
+            }
+            
+            const resultElement = document.getElementById('result');
+            isJsonCompressed = !isJsonCompressed;
+            
+            if (isJsonCompressed) {
+                // 压缩显示
+                resultElement.className = 'result';
+                resultElement.textContent = JSON.stringify(originalJsonData);
+            } else {
+                // 美化显示（树形展示）
+                renderJsonTree(originalJsonData, resultElement);
+            }
+            
+            // 更新按钮图标
+            const btn = document.querySelector('.compress');
+            btn.innerHTML = isJsonCompressed ? '📄' : '🗜️';
+            btn.title = isJsonCompressed ? '美化JSON' : '压缩JSON';
+        }
+
+        // 显示/隐藏行号
+        function toggleLineNumbers() {
+            const resultElement = document.getElementById('result');
+            showLineNumbers = !showLineNumbers;
+            
+            if (showLineNumbers) {
+                resultElement.classList.add('show-line-numbers');
+            } else {
+                resultElement.classList.remove('show-line-numbers');
+            }
+            
+            // 更新按钮图标
+            const btn = document.querySelector('.line-numbers');
+            btn.innerHTML = showLineNumbers ? '🔢' : '🔢';
+            btn.title = showLineNumbers ? '隐藏行号' : '显示行号';
+        }
+
+        // 全部展开/收缩
+        function toggleExpandAll() {
+            const resultElement = document.getElementById('result');
+            if (!resultElement.classList.contains('json-tree')) {
+                alert('当前不是树形展示模式');
+                return;
+            }
+            
+            isAllExpanded = !isAllExpanded;
+            const toggles = resultElement.querySelectorAll('.json-tree-toggle');
+            const children = resultElement.querySelectorAll('.json-tree-children');
+            
+            toggles.forEach((toggle, index) => {
+                if (isAllExpanded) {
+                    toggle.classList.remove('collapsed');
+                    toggle.classList.add('expanded');
+                    if (children[index]) {
+                        children[index].classList.remove('collapsed');
+                    }
+                } else {
+                    toggle.classList.remove('expanded');
+                    toggle.classList.add('collapsed');
+                    if (children[index]) {
+                        children[index].classList.add('collapsed');
+                    }
+                }
+            });
+            
+            // 更新按钮图标
+            const btn = document.querySelector('.expand-all');
+            btn.innerHTML = isAllExpanded ? '📁' : '📂';
+            btn.title = isAllExpanded ? '全部收缩' : '全部展开';
+        }
+
+        // 保存结果
+        function saveResult() {
+            if (!originalJsonData) {
+                alert('暂无结果数据可保存');
+                return;
+            }
+            
+            const jsonString = JSON.stringify(originalJsonData, null, 2);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'dubbo-invoke-result-' + new Date().toISOString().slice(0,19).replace(/:/g, '-') + '.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // 清空结果
+        function clearResult() {
+            const resultElement = document.getElementById('result');
+            resultElement.innerHTML = '';
+            resultElement.className = 'result';
+            resultElement.style.display = 'none';
+            originalJsonData = null;
+            
+            // 重置状态
+            isJsonCompressed = false;
+            showLineNumbers = false;
+            isAllExpanded = true;
+            
+            // 重置按钮状态
+            const compressBtn = document.querySelector('.compress');
+            const lineNumbersBtn = document.querySelector('.line-numbers');
+            const expandBtn = document.querySelector('.expand-all');
+            
+            if (compressBtn) {
+                compressBtn.innerHTML = '🗜️';
+                compressBtn.title = '压缩JSON';
+            }
+            if (lineNumbersBtn) {
+                lineNumbersBtn.innerHTML = '🔢';
+                lineNumbersBtn.title = '显示行号';
+            }
+            if (expandBtn) {
+                expandBtn.innerHTML = '📂';
+                expandBtn.title = '全部展开/收缩';
+            }
+            
+            // 隐藏结果面板标题的状态指示器
+            const resultPanelTitle = document.querySelector('.result-panel h2');
+            if (resultPanelTitle) {
+                const titleSpan = resultPanelTitle.querySelector('span');
+                if (titleSpan) {
+                    titleSpan.innerHTML = '调用结果';
+                }
             }
         }
         
@@ -2723,7 +3296,11 @@ const indexHTML = `<!DOCTYPE html>
                  '</div>';
          }
         
-        window.onload = function() { loadHistory(); };
+        window.onload = function() { 
+            loadHistory(); 
+            // 默认切换到表达式格式
+            toggleCallFormat();
+        };
     </script>
 </body>
 </html>`
