@@ -17,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// (favicon 由磁盘读取)
+
 // CallHistory 调用历史记录
 type CallHistory struct {
 	ID          string        `json:"id"`
@@ -130,6 +132,7 @@ func (ws *WebServer) Start() error {
 	http.HandleFunc("/api/example", ws.handleExample)
 	http.HandleFunc("/api/history", ws.handleHistory)
 	http.HandleFunc("/api/clear-history", ws.handleClearHistory)
+	http.HandleFunc("/api/zk-environments", ws.handleZkEnvironments)
 
 	// 添加静态文件服务
 	http.Handle("/test_download.html", http.HandlerFunc(ws.handleStaticFile))
@@ -520,11 +523,20 @@ func (ws *WebServer) executeInvoke(req InvokeRequest, params []interface{}) (int
 		Registry:    req.Registry,
 		Application: req.App,
 		Timeout:     time.Duration(req.Timeout) * time.Millisecond,
+		Namespace:   req.Namespace,
 	}
 	color.Green("[WEB] Dubbo客户端配置创建成功")
 
 	// 使用传入的已解析参数
 	color.Green("[WEB] 使用已解析的参数，参数数量: %d", len(params))
+
+	// 智能类型补全：当无类型信息且仅一个参数为List时，自动设置为java.util.List
+	if len(req.Types) == 0 && len(params) == 1 {
+		if _, ok := params[0].([]interface{}); ok {
+			color.Yellow("[WEB] 检测到单参数为列表，自动设置类型为 java.util.List")
+			req.Types = []string{"java.util.List"}
+		}
+	}
 
 	// 构建并打印dubbo invoke命令，方便用户验证
 	invokeCmd := ws.buildDubboInvokeCommand(req.ServiceName, req.MethodName, params)
@@ -1025,6 +1037,49 @@ func (ws *WebServer) handleTestPrecision(w http.ResponseWriter, r *http.Request)
 	encoder.Encode(response)
 }
 
+// ZookeeperEnvironment Zookeeper环境配置
+type ZookeeperEnvironment struct {
+	Name        string `json:"name"`
+	Address     string `json:"address"`
+	ServicePath string `json:"servicePath"`
+}
+
+// getZookeeperEnvironments 获取Zookeeper环境配置
+func getZookeeperEnvironments() map[string]ZookeeperEnvironment {
+	return map[string]ZookeeperEnvironment{
+		"dev": {
+			Name:        "开发环境",
+			Address:     "10.7.8.40:2181",
+			ServicePath: "dubbo",
+		},
+		"uat": {
+			Name:        "用户验收测试",
+			Address:     "10.7.8.42:2181",
+			ServicePath: "uat",
+		},
+		"tat": {
+			Name:        "技术验收测试",
+			Address:     "10.6.12.153:2181",
+			ServicePath: "tat",
+		},
+		"fat": {
+			Name:        "功能验收测试",
+			Address:     "10.6.12.205:2181",
+			ServicePath: "fat",
+		},
+		"pre": {
+			Name:        "预生产环境",
+			Address:     "mse-4ec83a20-zk.mse.aliyuncs.com:2181",
+			ServicePath: "pre",
+		},
+		"prod": {
+			Name:        "生产环境",
+			Address:     "mse-2cd54c90-zk.mse.aliyuncs.com:2181",
+			ServicePath: "prod",
+		},
+	}
+}
+
 // indexHTML 首页HTML模板
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1342,6 +1397,41 @@ const indexHTML = `<!DOCTYPE html>
             overflow-x: auto;
         }
 
+        /* 行号显示样式 */
+        .result.show-line-numbers {
+            counter-reset: line-number;
+            padding-left: 50px;
+            position: relative;
+        }
+
+        .result.show-line-numbers::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 40px;
+            background: #f8f9fa;
+            border-right: 1px solid #e0e0e0;
+        }
+
+        .result.show-line-numbers .line {
+            counter-increment: line-number;
+            position: relative;
+        }
+
+        .result.show-line-numbers .line::before {
+            content: counter(line-number);
+            position: absolute;
+            left: -45px;
+            width: 35px;
+            text-align: right;
+            color: #666;
+            font-size: 11px;
+            line-height: inherit;
+            padding-right: 8px;
+        }
+
         /* JSON树形展示样式 */
         .json-tree {
             font-family: monospace;
@@ -1636,7 +1726,18 @@ const indexHTML = `<!DOCTYPE html>
                                         <option value="nacos">Nacos</option>
                                         <option value="dubbo">Dubbo</option>
                                     </select>
-                                    <input type="text" id="registryAddress" placeholder="127.0.0.1:2181" value="127.0.0.1:2181" style="flex: 1;">
+                                    <div id="zkEnvironmentContainer" style="display: none; flex: 1;">
+                                        <select id="zkEnvironment" onchange="onZkEnvironmentChange()" style="width: 100%;">
+                                            <option value="">请选择环境</option>
+                                            <option value="dev">开发环境 (dev)</option>
+                                            <option value="uat">用户验收测试 (uat)</option>
+                                            <option value="tat">技术验收测试 (tat)</option>
+                                            <option value="fat">功能验收测试 (fat)</option>
+                                            <option value="pre">预生产环境 (pre)</option>
+                                            <option value="prod">生产环境 (prod)</option>
+                                        </select>
+                                    </div>
+                                    <input type="text" id="registryAddress" placeholder="127.0.0.1:2181" value="127.0.0.1:2181" style="flex: 1;" readonly>
                                     <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
@@ -1672,7 +1773,18 @@ const indexHTML = `<!DOCTYPE html>
                                         <option value="nacos">Nacos</option>
                                         <option value="dubbo">Dubbo</option>
                                     </select>
-                                    <input type="text" id="registryAddressExpr" value="{{.Registry}}" placeholder="127.0.0.1:2181" style="flex: 1;">
+                                    <div id="zkEnvironmentContainerExpr" style="display: none; flex: 1;">
+                                        <select id="zkEnvironmentExpr" onchange="onZkEnvironmentChangeExpr()" style="width: 100%;">
+                                            <option value="">请选择环境</option>
+                                            <option value="dev">开发环境 (dev)</option>
+                                            <option value="uat">用户验收测试 (uat)</option>
+                                            <option value="tat">技术验收测试 (tat)</option>
+                                            <option value="fat">功能验收测试 (fat)</option>
+                                            <option value="pre">预生产环境 (pre)</option>
+                                            <option value="prod">生产环境 (prod)</option>
+                                        </select>
+                                    </div>
+                                    <input type="text" id="registryAddressExpr" value="{{.Registry}}" placeholder="127.0.0.1:2181" style="flex: 1;" readonly>
                                     <button class="btn btn-secondary" onclick="testConnection()" style="margin: 0; white-space: nowrap;">🔗 测试连接</button>
                                 </div>
                             </div>
@@ -1771,6 +1883,40 @@ const indexHTML = `<!DOCTYPE html>
         </div>
     </div>
     <script>
+        // Zookeeper环境配置
+        const ZOOKEEPER_ENVIRONMENTS = {
+            dev: {
+                name: '开发环境',
+                address: '10.7.8.40:2181',
+                servicePath: 'dubbo'
+            },
+            uat: {
+                name: '用户验收测试',
+                address: '10.7.8.42:2181',
+                servicePath: 'uat'
+            },
+            tat: {
+                name: '技术验收测试',
+                address: '10.6.12.153:2181',
+                servicePath: 'tat'
+            },
+            fat: {
+                name: '功能验收测试',
+                address: '10.6.12.205:2181',
+                servicePath: 'fat'
+            },
+            pre: {
+                name: '预生产环境',
+                address: 'mse-4ec83a20-zk.mse.aliyuncs.com:2181',
+                servicePath: 'pre'
+            },
+            prod: {
+                name: '生产环境',
+                address: 'mse-2cd54c90-zk.mse.aliyuncs.com:2181',
+                servicePath: 'prod'
+            }
+        };
+
         // 全局变量存储原始JSON数据用于复制
         let originalJsonData = null;
         let isJsonCompressed = false;
@@ -1857,7 +2003,8 @@ const indexHTML = `<!DOCTYPE html>
                     // 首先尝试将整个参数部分作为JSON数组解析（只有当它是完整的JSON数组格式时）
                     if (processedParamsPart.startsWith('[') && processedParamsPart.endsWith(']')) {
                         try {
-                            parameters = JSONBig.parse(processedParamsPart);
+                            // 将整体数组视为单个参数（List），避免被拆分为多个独立参数
+                            parameters = [JSONBig.parse(processedParamsPart)];
                         } catch (e) {
                             // 如果解析失败，说明不是有效的JSON数组，使用参数分割逻辑
                             throw e;
@@ -2559,7 +2706,10 @@ const indexHTML = `<!DOCTYPE html>
             childrenContainer.className = 'json-tree-children';
             
             entries.forEach(([childKey, childValue], index) => {
-                const childElement = createJsonTree(childValue, childKey, false);
+                // 对于数组，不显示索引键，直接显示值
+                const childElement = isArray ? 
+                    createJsonTree(childValue, null, false) : 
+                    createJsonTree(childValue, childKey, false);
                 if (index < entries.length - 1) {
                     const comma = document.createElement('span');
                     comma.innerHTML = ',';
@@ -2822,10 +2972,39 @@ const indexHTML = `<!DOCTYPE html>
                     onRegistryTypeChange();
                 }
                 
-                // 设置注册中心地址
-                const registryAddressEl = document.getElementById('registryAddress');
-                if (registryAddressEl) {
-                    registryAddressEl.value = registryAddress;
+                // 如果是ZooKeeper类型，尝试匹配环境
+                if (registryType === 'zookeeper') {
+                    const zkEnvironmentEl = document.getElementById('zkEnvironment');
+                    if (zkEnvironmentEl) {
+                        // 根据地址匹配环境
+                        let matchedEnv = '';
+                        for (const [envKey, envConfig] of Object.entries(ZOOKEEPER_ENVIRONMENTS)) {
+                            if (envConfig.address === registryAddress) {
+                                matchedEnv = envKey;
+                                break;
+                            }
+                        }
+                        
+                        if (matchedEnv) {
+                            // 找到匹配的环境，设置下拉框
+                            zkEnvironmentEl.value = matchedEnv;
+                            // 触发环境变化事件以更新地址和命名空间
+                            onZkEnvironmentChange();
+                        } else {
+                            // 没有找到匹配的环境，清空选择并手动设置地址
+                            zkEnvironmentEl.value = '';
+                            const registryAddressEl = document.getElementById('registryAddress');
+                            if (registryAddressEl) {
+                                registryAddressEl.value = registryAddress;
+                            }
+                        }
+                    }
+                } else {
+                    // 非ZooKeeper类型，直接设置地址
+                    const registryAddressEl = document.getElementById('registryAddress');
+                    if (registryAddressEl) {
+                        registryAddressEl.value = registryAddress;
+                    }
                 }
             }
             
@@ -2923,10 +3102,47 @@ const indexHTML = `<!DOCTYPE html>
                     onRegistryTypeChange();
                 }
                 
-                // 设置注册中心地址
-                const registryAddressEl = document.getElementById('registryAddress');
-                if (registryAddressEl) {
-                    registryAddressEl.value = registryAddress;
+                // 如果是ZooKeeper类型，重新匹配环境（因为toggleCallFormat可能重置了选择）
+                if (registryType === 'zookeeper') {
+                    const zkEnvironmentEl = document.getElementById('zkEnvironment');
+                    if (zkEnvironmentEl) {
+                        // 根据地址匹配环境
+                        let matchedEnv = '';
+                        for (const [envKey, envConfig] of Object.entries(ZOOKEEPER_ENVIRONMENTS)) {
+                            if (envConfig.address === registryAddress) {
+                                matchedEnv = envKey;
+                                break;
+                            }
+                        }
+                        
+                        if (matchedEnv) {
+                            // 找到匹配的环境，设置下拉框
+                            zkEnvironmentEl.value = matchedEnv;
+                            // 触发环境变化事件以更新地址和命名空间
+                            onZkEnvironmentChange();
+                        } else {
+                            // 没有找到匹配的环境，清空选择并手动设置地址
+                            zkEnvironmentEl.value = '';
+                            const registryAddressEl = document.getElementById('registryAddress');
+                            if (registryAddressEl) {
+                                registryAddressEl.value = registryAddress;
+                            }
+                        }
+                    }
+                } else {
+                    // 非ZooKeeper类型，直接设置地址
+                    const registryAddressEl = document.getElementById('registryAddress');
+                    if (registryAddressEl) {
+                        registryAddressEl.value = registryAddress;
+                    }
+                }
+                
+                // 设置命名空间（如果有的话）
+                if (item.namespace) {
+                    const namespaceEl = document.getElementById('namespace');
+                    if (namespaceEl) {
+                        namespaceEl.value = item.namespace;
+                    }
                 }
             }
         }
@@ -3018,14 +3234,55 @@ const indexHTML = `<!DOCTYPE html>
             
             if (showLineNumbers) {
                 resultElement.classList.add('show-line-numbers');
+                // 如果是JSON树形展示，转换为格式化的纯文本显示
+                if (resultElement.classList.contains('json-tree') && originalJsonData) {
+                    const formattedJson = JSON.stringify(originalJsonData, null, 2);
+                    resultElement.className = 'result show-line-numbers';
+                    addLineNumbers(resultElement, formattedJson);
+                } else {
+                    // 对于纯文本内容，直接添加行号
+                    addLineNumbers(resultElement);
+                }
             } else {
                 resultElement.classList.remove('show-line-numbers');
+                // 恢复原始显示模式
+                if (originalJsonData && typeof originalJsonData === 'object') {
+                    // 恢复JSON树形展示
+                    renderJsonTree(originalJsonData, resultElement);
+                } else {
+                    // 移除行号，恢复原始内容
+                    removeLineNumbers(resultElement);
+                }
             }
             
             // 更新按钮图标
             const btn = document.querySelector('.line-numbers');
             btn.innerHTML = showLineNumbers ? '🔢' : '🔢';
             btn.title = showLineNumbers ? '隐藏行号' : '显示行号';
+        }
+
+        // 添加行号到结果内容
+        function addLineNumbers(element, content = null) {
+            const textContent = content || element.textContent || element.innerText;
+            const lines = textContent.split('\n');
+            
+            // 清空元素并重新构建带行号的内容
+            element.innerHTML = '';
+            lines.forEach((line, index) => {
+                const lineDiv = document.createElement('div');
+                lineDiv.className = 'line';
+                lineDiv.textContent = line || ' '; // 空行显示空格
+                element.appendChild(lineDiv);
+            });
+        }
+
+        // 移除行号，恢复原始内容
+        function removeLineNumbers(element) {
+            const lines = element.querySelectorAll('.line');
+            if (lines.length > 0) {
+                const content = Array.from(lines).map(line => line.textContent).join('\n');
+                element.textContent = content;
+            }
         }
 
         // 全部展开/收缩
@@ -3125,6 +3382,8 @@ const indexHTML = `<!DOCTYPE html>
         function onRegistryTypeChange() {
             const registryType = document.getElementById('registryType').value;
             const namespaceGroup = document.getElementById('namespaceGroup');
+            const zkEnvironmentContainer = document.getElementById('zkEnvironmentContainer');
+            const addressInput = document.getElementById('registryAddress');
             
             // 只有nacos时才显示命名空间
             if (registryType === 'nacos') {
@@ -3133,22 +3392,52 @@ const indexHTML = `<!DOCTYPE html>
                 namespaceGroup.style.display = 'none';
             }
             
-            // 根据注册中心类型设置默认端口
-            const addressInput = document.getElementById('registryAddress');
+            // 只有zookeeper时才显示环境选择
             if (registryType === 'zookeeper') {
-                addressInput.placeholder = '127.0.0.1:2181';
-                if (!addressInput.value || addressInput.value === '127.0.0.1:8848' || addressInput.value === '127.0.0.1:8080') {
-                    addressInput.value = '127.0.0.1:2181';
+                zkEnvironmentContainer.style.display = 'block';
+                addressInput.style.display = 'none';
+                addressInput.readOnly = true;
+                addressInput.placeholder = '请先选择环境';
+                addressInput.value = '';
+                // 重置环境选择
+                document.getElementById('zkEnvironment').value = '';
+            } else {
+                zkEnvironmentContainer.style.display = 'none';
+                addressInput.style.display = 'block';
+                addressInput.readOnly = false;
+                
+                // 根据注册中心类型设置默认端口
+                if (registryType === 'nacos') {
+                    addressInput.placeholder = '127.0.0.1:8848';
+                    if (!addressInput.value || addressInput.value === '127.0.0.1:2181' || addressInput.value === '127.0.0.1:8080') {
+                        addressInput.value = '127.0.0.1:8848';
+                    }
+                } else if (registryType === 'dubbo') {
+                    addressInput.placeholder = '127.0.0.1:8080';
+                    if (!addressInput.value || addressInput.value === '127.0.0.1:2181' || addressInput.value === '127.0.0.1:8848') {
+                        addressInput.value = '127.0.0.1:8080';
+                    }
                 }
-            } else if (registryType === 'nacos') {
-                addressInput.placeholder = '127.0.0.1:8848';
-                if (!addressInput.value || addressInput.value === '127.0.0.1:2181' || addressInput.value === '127.0.0.1:8080') {
-                    addressInput.value = '127.0.0.1:8848';
+            }
+        }
+        
+        function onZkEnvironmentChange() {
+            const selectedEnv = document.getElementById('zkEnvironment').value;
+            const addressInput = document.getElementById('registryAddress');
+            const namespaceInput = document.getElementById('namespace');
+            
+            if (selectedEnv && ZOOKEEPER_ENVIRONMENTS[selectedEnv]) {
+                const envConfig = ZOOKEEPER_ENVIRONMENTS[selectedEnv];
+                addressInput.value = envConfig.address;
+                // 自动设置namespace为对应环境的servicePath
+                if (namespaceInput) {
+                    namespaceInput.value = envConfig.servicePath;
                 }
-            } else if (registryType === 'dubbo') {
-                addressInput.placeholder = '127.0.0.1:8080';
-                if (!addressInput.value || addressInput.value === '127.0.0.1:2181' || addressInput.value === '127.0.0.1:8848') {
-                    addressInput.value = '127.0.0.1:8080';
+                console.log('选择环境:', envConfig.name, '地址:', envConfig.address, '服务路径:', envConfig.servicePath);
+            } else {
+                addressInput.value = '';
+                if (namespaceInput) {
+                    namespaceInput.value = 'public';
                 }
             }
         }
@@ -3156,6 +3445,8 @@ const indexHTML = `<!DOCTYPE html>
         function onRegistryTypeChangeExpr() {
             const registryTypeExpr = document.getElementById('registryTypeExpr').value;
             const namespaceGroupExpr = document.getElementById('namespaceGroupExpr');
+            const zkEnvironmentContainerExpr = document.getElementById('zkEnvironmentContainerExpr');
+            const addressInputExpr = document.getElementById('registryAddressExpr');
             
             // 只有nacos时才显示命名空间
             if (registryTypeExpr === 'nacos') {
@@ -3164,22 +3455,52 @@ const indexHTML = `<!DOCTYPE html>
                 namespaceGroupExpr.style.display = 'none';
             }
             
-            // 根据注册中心类型设置默认端口
-            const addressInputExpr = document.getElementById('registryAddressExpr');
+            // 只有zookeeper时才显示环境选择
             if (registryTypeExpr === 'zookeeper') {
-                addressInputExpr.placeholder = '127.0.0.1:2181';
-                if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:8848' || addressInputExpr.value === '127.0.0.1:8080') {
-                    addressInputExpr.value = '127.0.0.1:2181';
+                zkEnvironmentContainerExpr.style.display = 'block';
+                addressInputExpr.style.display = 'none';
+                addressInputExpr.readOnly = true;
+                addressInputExpr.placeholder = '请先选择环境';
+                addressInputExpr.value = '';
+                // 重置环境选择
+                document.getElementById('zkEnvironmentExpr').value = '';
+            } else {
+                zkEnvironmentContainerExpr.style.display = 'none';
+                addressInputExpr.style.display = 'block';
+                addressInputExpr.readOnly = false;
+                
+                // 根据注册中心类型设置默认端口
+                if (registryTypeExpr === 'nacos') {
+                    addressInputExpr.placeholder = '127.0.0.1:8848';
+                    if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:2181' || addressInputExpr.value === '127.0.0.1:8080') {
+                        addressInputExpr.value = '127.0.0.1:8848';
+                    }
+                } else if (registryTypeExpr === 'dubbo') {
+                    addressInputExpr.placeholder = '127.0.0.1:8080';
+                    if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:2181' || addressInputExpr.value === '127.0.0.1:8848') {
+                        addressInputExpr.value = '127.0.0.1:8080';
+                    }
                 }
-            } else if (registryTypeExpr === 'nacos') {
-                addressInputExpr.placeholder = '127.0.0.1:8848';
-                if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:2181' || addressInputExpr.value === '127.0.0.1:8080') {
-                    addressInputExpr.value = '127.0.0.1:8848';
+            }
+        }
+        
+        function onZkEnvironmentChangeExpr() {
+            const selectedEnv = document.getElementById('zkEnvironmentExpr').value;
+            const addressInputExpr = document.getElementById('registryAddressExpr');
+            const namespaceInputExpr = document.getElementById('namespaceExpr');
+            
+            if (selectedEnv && ZOOKEEPER_ENVIRONMENTS[selectedEnv]) {
+                const envConfig = ZOOKEEPER_ENVIRONMENTS[selectedEnv];
+                addressInputExpr.value = envConfig.address;
+                // 自动设置namespace为对应环境的servicePath
+                if (namespaceInputExpr) {
+                    namespaceInputExpr.value = envConfig.servicePath;
                 }
-            } else if (registryTypeExpr === 'dubbo') {
-                addressInputExpr.placeholder = '127.0.0.1:8080';
-                if (!addressInputExpr.value || addressInputExpr.value === '127.0.0.1:2181' || addressInputExpr.value === '127.0.0.1:8848') {
-                    addressInputExpr.value = '127.0.0.1:8080';
+                console.log('选择环境:', envConfig.name, '地址:', envConfig.address, '服务路径:', envConfig.servicePath);
+            } else {
+                addressInputExpr.value = '';
+                if (namespaceInputExpr) {
+                    namespaceInputExpr.value = 'public';
                 }
             }
         }
@@ -3300,6 +3621,9 @@ const indexHTML = `<!DOCTYPE html>
             loadHistory(); 
             // 默认切换到表达式格式
             toggleCallFormat();
+            // 初始化注册中心类型变化
+            onRegistryTypeChange();
+            onRegistryTypeChangeExpr();
         };
     </script>
 </body>
@@ -3325,6 +3649,26 @@ func (ws *WebServer) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
+// handleZkEnvironments 处理获取Zookeeper环境配置
+func (ws *WebServer) handleZkEnvironments(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != "GET" {
+		ws.writeError(w, "只支持GET方法")
+		return
+	}
+
+	environments := getZookeeperEnvironments()
+
+	response := map[string]interface{}{
+		"success":      true,
+		"environments": environments,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
 // handleFavicon 处理favicon请求
 func (ws *WebServer) handleFavicon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
@@ -3334,15 +3678,12 @@ func (ws *WebServer) handleFavicon(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// 读取图标文件
-	filePath := "/Users/hongyan/work/workspace/todo/invoke/icons/dubbo.png"
+	// 从磁盘读取图标文件（要求运行目录下有 icons/dubbo.png）
+	filePath := "icons/dubbo.png"
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		// 如果文件不存在，返回404
 		http.NotFound(w, r)
 		return
 	}
-
 	w.Write(content)
 }

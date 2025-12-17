@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>注册中心管理</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>注册中心管理</h1>
+        
+        <div class="form-section">
+            <div class="form-group">
+                <label for="registryType">注册中心类型:</label>
+                <select id="registryType" onchange="handleRegistryTypeChange()">
+                    <option value="">请选择注册中心类型</option>
+                    <option value="zookeeper">Zookeeper</option>
+                    <option value="nacos">Nacos</option>
+                    <option value="dubbo">Dubbo</option>
+                </select>
+            </div>
+
+            <!-- Zookeeper环境选择区域 -->
+            <div id="zookeeperEnvSection" class="form-group" style="display: none;">
+                <label for="zkEnvironment">环境选择:</label>
+                <select id="zkEnvironment" onchange="handleZkEnvironmentChange()">
+                    <option value="">请选择环境</option>
+                    <option value="dev">开发环境 (dev)</option>
+                    <option value="uat">用户验收测试 (uat)</option>
+                    <option value="tat">技术验收测试 (tat)</option>
+                    <option value="fat">功能验收测试 (fat)</option>
+                    <option value="pre">预生产环境 (pre)</option>
+                    <option value="prod">生产环境 (prod)</option>
+                </select>
+            </div>
+
+            <!-- 通用配置区域 -->
+            <div class="form-group">
+                <label for="serverAddress">服务器地址:</label>
+                <input type="text" id="serverAddress" placeholder="请输入服务器地址" readonly>
+            </div>
+
+            <div class="form-group">
+                <label for="servicePath">服务路径:</label>
+                <input type="text" id="servicePath" placeholder="请输入服务路径" readonly>
+            </div>
+
+            <!-- 其他注册中心的配置区域 -->
+            <div id="otherRegistrySection" style="display: none;">
+                <div class="form-group">
+                    <label for="customAddress">自定义地址:</label>
+                    <input type="text" id="customAddress" placeholder="请输入自定义地址">
+                </div>
+                
+                <div class="form-group">
+                    <label for="customPath">自定义路径:</label>
+                    <input type="text" id="customPath" placeholder="请输入自定义路径">
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button onclick="testConnection()" class="btn btn-primary">测试连接</button>
+                <button onclick="saveConfiguration()" class="btn btn-success">保存配置</button>
+                <button onclick="resetForm()" class="btn btn-secondary">重置</button>
+            </div>
+        </div>
+
+        <!-- 配置信息显示区域 -->
+        <div class="config-display">
+            <h3>当前配置信息</h3>
+            <div id="configInfo" class="config-info">
+                <p>请选择注册中心类型和环境</p>
+            </div>
+        </div>
+
+        <!-- 连接状态显示区域 -->
+        <div class="status-section">
+            <h3>连接状态</h3>
+            <div id="connectionStatus" class="status-info">
+                <span class="status-indicator offline"></span>
+                <span>未连接</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

@@ -6,23 +6,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/transform"
 	"io"
 	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
 	"github.com/go-zookeeper/zk"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 // ChunkedTransferManager 分块传输管理器
 type ChunkedTransferManager struct {
-	chunkSize    int
-	maxChunks    int
-	timeout      time.Duration
-	compression  bool
+	chunkSize   int
+	maxChunks   int
+	timeout     time.Duration
+	compression bool
 }
 
 // NewChunkedTransferManager 创建分块传输管理器
@@ -135,17 +136,17 @@ func (ctm *ChunkedTransferManager) WriteChunkedData(conn net.Conn, data []byte) 
 func (ctm *ChunkedTransferManager) compressData(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
-	
+
 	_, err := gzWriter.Write(data)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	err = gzWriter.Close()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return buf.Bytes(), nil
 }
 
@@ -157,17 +158,17 @@ func (ctm *ChunkedTransferManager) decompressData(data []byte) ([]byte, error) {
 		return data, nil
 	}
 	defer reader.Close()
-	
+
 	return io.ReadAll(reader)
 }
 
 // StreamProcessor 流式处理器
 type StreamProcessor struct {
-	bufferPool   *sync.Pool
-	processorCh  chan []byte
-	resultCh     chan ProcessResult
-	ctx          context.Context
-	cancel       context.CancelFunc
+	bufferPool  *sync.Pool
+	processorCh chan []byte
+	resultCh    chan ProcessResult
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // ProcessResult 处理结果
@@ -215,11 +216,11 @@ func (sp *StreamProcessor) processChunk(data []byte) ProcessResult {
 	var result interface{}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	
+
 	if err := decoder.Decode(&result); err != nil {
 		return ProcessResult{Error: err}
 	}
-	
+
 	return ProcessResult{Data: result}
 }
 
@@ -242,11 +243,11 @@ func (sp *StreamProcessor) Stop() {
 
 // MemoryManager 内存管理器
 type MemoryManager struct {
-	objectPool   *sync.Pool
-	bufferPool   *sync.Pool
-	maxPoolSize  int
-	currentSize  int
-	mu           sync.RWMutex
+	objectPool  *sync.Pool
+	bufferPool  *sync.Pool
+	maxPoolSize int
+	currentSize int
+	mu          sync.RWMutex
 }
 
 // NewMemoryManager 创建内存管理器
@@ -270,7 +271,7 @@ func NewMemoryManager(maxPoolSize int) *MemoryManager {
 func (mm *MemoryManager) GetObject() map[string]interface{} {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
-	
+
 	if mm.currentSize < mm.maxPoolSize {
 		mm.currentSize++
 		return mm.objectPool.Get().(map[string]interface{})
@@ -282,12 +283,12 @@ func (mm *MemoryManager) GetObject() map[string]interface{} {
 func (mm *MemoryManager) PutObject(obj map[string]interface{}) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
-	
+
 	// 清空对象
 	for k := range obj {
 		delete(obj, k)
 	}
-	
+
 	if mm.currentSize > 0 {
 		mm.objectPool.Put(obj)
 		mm.currentSize--
@@ -308,12 +309,12 @@ func (mm *MemoryManager) PutBuffer(buf *bytes.Buffer) {
 
 // AsyncProcessor 异步处理器
 type AsyncProcessor struct {
-	workerPool   chan chan AsyncTask
-	taskQueue    chan AsyncTask
-	workerCount  int
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
+	workerPool  chan chan AsyncTask
+	taskQueue   chan AsyncTask
+	workerCount int
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // AsyncTask 异步任务
@@ -343,7 +344,7 @@ func (ap *AsyncProcessor) Start() {
 		ap.wg.Add(1)
 		go ap.worker()
 	}
-	
+
 	// 启动任务分发协程
 	go ap.dispatcher()
 }
@@ -351,9 +352,9 @@ func (ap *AsyncProcessor) Start() {
 // worker 工作协程
 func (ap *AsyncProcessor) worker() {
 	defer ap.wg.Done()
-	
+
 	taskChan := make(chan AsyncTask)
-	
+
 	for {
 		// 注册工作协程
 		select {
@@ -398,17 +399,17 @@ func (ap *AsyncProcessor) dispatcher() {
 func (ap *AsyncProcessor) processTask(task AsyncTask) {
 	ctx, cancel := context.WithTimeout(context.Background(), task.Timeout)
 	defer cancel()
-	
+
 	done := make(chan struct{})
 	var result interface{}
 	var err error
-	
+
 	go func() {
 		defer close(done)
 		// 这里可以根据任务类型进行不同的处理
 		result = task.Data
 	}()
-	
+
 	select {
 	case <-done:
 		if task.Callback != nil {
@@ -442,47 +443,45 @@ func (ap *AsyncProcessor) Stop() {
 // OptimizedDubboConfig 优化的Dubbo配置
 type OptimizedDubboConfig struct {
 	*DubboConfig
-	MaxPayloadSize    int           // 最大负载大小
-	ChunkSize         int           // 分块大小
-	MaxChunks         int           // 最大分块数
-	CompressionLevel  int           // 压缩级别
-	WorkerCount       int           // 工作协程数
-	BufferPoolSize    int           // 缓冲池大小
-	ConnectionPool    int           // 连接池大小
-	RetryAttempts     int           // 重试次数
-	RetryDelay        time.Duration // 重试延迟
+	MaxPayloadSize   int           // 最大负载大小
+	ChunkSize        int           // 分块大小
+	MaxChunks        int           // 最大分块数
+	CompressionLevel int           // 压缩级别
+	WorkerCount      int           // 工作协程数
+	BufferPoolSize   int           // 缓冲池大小
+	ConnectionPool   int           // 连接池大小
+	RetryAttempts    int           // 重试次数
+	RetryDelay       time.Duration // 重试延迟
 }
 
 // NewOptimizedDubboConfig 创建优化的Dubbo配置
 func NewOptimizedDubboConfig(base *DubboConfig) *OptimizedDubboConfig {
 	return &OptimizedDubboConfig{
-		DubboConfig:       base,
-		MaxPayloadSize:    50 * 1024 * 1024, // 50MB
-		ChunkSize:         8192,              // 8KB
-		MaxChunks:         1000,              // 最大1000个分块
-		CompressionLevel:  6,                 // gzip压缩级别
-		WorkerCount:       10,                // 10个工作协程
-		BufferPoolSize:    1000,              // 1000个缓冲区
-		ConnectionPool:    5,                 // 5个连接
-		RetryAttempts:     3,                 // 重试3次
-		RetryDelay:        time.Second,       // 1秒重试延迟
+		DubboConfig:      base,
+		MaxPayloadSize:   50 * 1024 * 1024, // 50MB
+		ChunkSize:        8192,             // 8KB
+		MaxChunks:        1000,             // 最大1000个分块
+		CompressionLevel: 6,                // gzip压缩级别
+		WorkerCount:      10,               // 10个工作协程
+		BufferPoolSize:   1000,             // 1000个缓冲区
+		ConnectionPool:   5,                // 5个连接
+		RetryAttempts:    3,                // 重试3次
+		RetryDelay:       time.Second,      // 1秒重试延迟
 	}
 }
 
 // RealDubboClient 简化的真实Dubbo客户端实现
 type RealDubboClient struct {
-	config              *DubboConfig
-	optimizedConfig     *OptimizedDubboConfig
-	connected           bool
-	conn                net.Conn
-	chunkedTransferMgr  *ChunkedTransferManager
-	streamProcessor     *StreamProcessor
-	memoryManager       *MemoryManager
-	asyncProcessor      *AsyncProcessor
-	nacosClient         *NacosClient // 添加Nacos客户端
+	config             *DubboConfig
+	optimizedConfig    *OptimizedDubboConfig
+	connected          bool
+	conn               net.Conn
+	chunkedTransferMgr *ChunkedTransferManager
+	streamProcessor    *StreamProcessor
+	memoryManager      *MemoryManager
+	asyncProcessor     *AsyncProcessor
+	nacosClient        *NacosClient // 添加Nacos客户端
 }
-
-
 
 // NewRealDubboClient 创建真实的Dubbo客户端
 func NewRealDubboClient(cfg *DubboConfig) (*RealDubboClient, error) {
@@ -505,8 +504,8 @@ func NewRealDubboClient(cfg *DubboConfig) (*RealDubboClient, error) {
 	chunkedMgr := NewChunkedTransferManager(
 		optimizedConfig.ChunkSize,
 		optimizedConfig.MaxChunks,
-		cfg.Timeout * 3, // 传输超时时间
-		true,  // 启用压缩
+		cfg.Timeout*3, // 传输超时时间
+		true,          // 启用压缩
 	)
 
 	// 创建流式处理器
@@ -625,9 +624,17 @@ func (c *RealDubboClient) getProviderFromZooKeeper(serviceName string) (string, 
 	}
 	defer zkConn.Close()
 
-	// 构建服务路径
-	servicePath := fmt.Sprintf("/dubbo/%s/providers", serviceName)
-	fmt.Printf("查找服务提供者路径: %s\n", servicePath)
+	// 构建服务路径，使用动态的namespace
+	var zkServicePath string
+	if c.config.Namespace != "" {
+		// 使用配置中的namespace作为ZooKeeper服务路径
+		zkServicePath = c.config.Namespace
+	} else {
+		// 默认使用dubbo作为服务路径
+		zkServicePath = "dubbo"
+	}
+	servicePath := fmt.Sprintf("/%s/%s/providers", zkServicePath, serviceName)
+	fmt.Printf("查找服务提供者路径: %s (namespace: %s)\n", servicePath, zkServicePath)
 
 	// 检查路径是否存在
 	exists, _, err := zkConn.Exists(servicePath)
@@ -668,9 +675,9 @@ func (c *RealDubboClient) parseProviderURL(providerURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("URL解码失败: %v", err)
 	}
-	
+
 	fmt.Printf("解码后的URL: %s\n", decodedURL)
-	
+
 	// Dubbo提供者URL格式: dubbo://ip:port/serviceName?version=1.0.0&...
 	if strings.HasPrefix(decodedURL, "dubbo://") {
 		// 移除协议前缀
@@ -691,10 +698,10 @@ func (c *RealDubboClient) connectToNacos(address string) error {
 	if c.config.Namespace != "" {
 		namespace = c.config.Namespace
 	}
-	
+
 	// 创建Nacos客户端
 	c.nacosClient = NewNacosClient(address, namespace, "DEFAULT_GROUP")
-	
+
 	// 测试连接
 	err := c.nacosClient.TestConnection()
 	if err != nil {
@@ -799,11 +806,11 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	// 增加初始读取超时，给服务端更多时间响应
 	initialTimeout := time.Duration(30 * time.Second)
 	c.conn.SetReadDeadline(time.Now().Add(initialTimeout))
-	
+
 	// 使用传统方式读取完整响应数据，避免分块限制导致数据截断
 	var responseBuffer bytes.Buffer
 	tempBuffer := make([]byte, 4096)
-	
+
 	for {
 		n, err := c.conn.Read(tempBuffer)
 		if err != nil {
@@ -818,31 +825,31 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 			}
 			return nil, fmt.Errorf("读取响应失败: %v", err)
 		}
-		
+
 		if n == 0 {
 			break
 		}
-		
+
 		responseBuffer.Write(tempBuffer[:n])
-		
+
 		// 检查是否读取完整（包含dubbo>提示符或其他结束标识）
 		responseText := responseBuffer.String()
-		if strings.Contains(responseText, "dubbo>") || 
-		   strings.Contains(responseText, "elapsed:") {
+		if strings.Contains(responseText, "dubbo>") ||
+			strings.Contains(responseText, "elapsed:") {
 			break
 		}
-		
+
 		// 设置较短的读取超时，避免无限等待
 		c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	}
 
 	// 重置读取超时
 	c.conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
-	
+
 	// 获取完整的响应文本
 	responseText := responseBuffer.String()
 	fmt.Printf("[DUBBO CLIENT] 完整响应文本: %s\n", responseText)
-	
+
 	// 尝试将响应从GBK编码转换为UTF-8
 	utf8ResponseText, err := c.convertToUTF8(responseBuffer.Bytes())
 	if err != nil {
@@ -852,26 +859,26 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 	} else {
 		fmt.Printf("[DUBBO CLIENT] UTF-8转换成功\n")
 	}
-	
+
 	// 检查是否包含错误信息
-	if strings.Contains(utf8ResponseText, "Failed to invoke") || 
-	   strings.Contains(utf8ResponseText, "error") ||
-	   strings.Contains(utf8ResponseText, "No such service") ||
-	   strings.Contains(utf8ResponseText, "No provider") ||
-	   strings.Contains(utf8ResponseText, "Service not found") {
+	if strings.Contains(utf8ResponseText, "Failed to invoke") ||
+		strings.Contains(utf8ResponseText, "error") ||
+		strings.Contains(utf8ResponseText, "No such service") ||
+		strings.Contains(utf8ResponseText, "No provider") ||
+		strings.Contains(utf8ResponseText, "Service not found") {
 		return nil, fmt.Errorf("调用失败: %s", utf8ResponseText)
 	}
 
 	// 清理响应文本，提取JSON部分
 	cleanedResponse := c.cleanResponse(utf8ResponseText)
 	fmt.Printf("[DUBBO CLIENT] 清理后的响应: %s\n", cleanedResponse)
-	
+
 	// 检查清理后的响应是否仍然包含dubbo控制台输出
 	// 如果清理后的响应包含"elapsed:"或"dubbo>"，说明可能没有获得有效的业务响应
 	// 但是"null"和有效的JSON（包括数组）都是有效的业务响应
-	if cleanedResponse != "null" && 
-	   (strings.Contains(cleanedResponse, "elapsed:") || 
-	    strings.Contains(cleanedResponse, "dubbo>")) {
+	if cleanedResponse != "null" &&
+		(strings.Contains(cleanedResponse, "elapsed:") ||
+			strings.Contains(cleanedResponse, "dubbo>")) {
 		// 进一步检查：如果是有效的JSON，则认为是有效响应
 		var jsonTest interface{}
 		if json.Unmarshal([]byte(cleanedResponse), &jsonTest) != nil {
@@ -880,7 +887,7 @@ func (c *RealDubboClient) GenericInvoke(serviceName, methodName string, paramTyp
 		}
 		// 如果是有效的JSON，继续执行，认为是有效响应
 	}
-	
+
 	// 返回清理后的响应
 	return cleanedResponse, nil
 }
@@ -925,8 +932,20 @@ func (c *RealDubboClient) getServicesFromZooKeeper() ([]string, error) {
 	}
 	defer conn.Close()
 
+	// 构建动态的ZooKeeper服务路径，使用namespace
+	var zkServicePath string
+	if c.config.Namespace != "" {
+		// 使用配置中的namespace作为ZooKeeper服务路径
+		zkServicePath = c.config.Namespace
+	} else {
+		// 默认使用dubbo作为服务路径
+		zkServicePath = "dubbo"
+	}
+	basePath := fmt.Sprintf("/%s", zkServicePath)
+	fmt.Printf("扫描ZooKeeper服务路径: %s (namespace: %s)\n", basePath, zkServicePath)
+
 	// 扫描Dubbo服务路径
-	services, err := c.scanZooKeeperServices(conn, "/dubbo")
+	services, err := c.scanZooKeeperServices(conn, basePath)
 	if err != nil {
 		return nil, fmt.Errorf("扫描ZooKeeper服务失败: %v", err)
 	}
@@ -937,7 +956,7 @@ func (c *RealDubboClient) getServicesFromZooKeeper() ([]string, error) {
 // scanZooKeeperServices 扫描ZooKeeper中的Dubbo服务
 func (c *RealDubboClient) scanZooKeeperServices(conn *zk.Conn, basePath string) ([]string, error) {
 	var services []string
-	
+
 	// 检查基础路径是否存在
 	exists, _, err := conn.Exists(basePath)
 	if err != nil {
@@ -955,14 +974,14 @@ func (c *RealDubboClient) scanZooKeeperServices(conn *zk.Conn, basePath string) 
 
 	for _, child := range children {
 		childPath := basePath + "/" + child
-		
+
 		// 检查是否为服务路径（包含providers子目录）
 		providersPath := childPath + "/providers"
 		exists, _, err := conn.Exists(providersPath)
 		if err != nil {
 			continue // 忽略错误，继续处理下一个
 		}
-		
+
 		if exists {
 			// 这是一个服务，添加到列表中
 			services = append(services, child)
@@ -984,24 +1003,24 @@ func (c *RealDubboClient) getServicesFromNacos() ([]string, error) {
 	if c.nacosClient == nil {
 		return nil, fmt.Errorf("Nacos客户端未初始化")
 	}
-	
+
 	// 使用NacosClient获取真实的服务列表
 	serviceList, err := c.nacosClient.GetServiceList()
 	if err != nil {
 		return nil, fmt.Errorf("获取Nacos服务列表失败: %v", err)
 	}
-	
+
 	// 提取服务名称
 	var services []string
 	if serviceList != nil && serviceList.Services != nil {
 		services = serviceList.Services
 	}
-	
+
 	// 如果没有获取到服务，返回空列表而不是错误
 	if len(services) == 0 {
 		fmt.Printf("警告: 在命名空间 '%s' 中未找到任何服务\n", c.nacosClient.Namespace)
 	}
-	
+
 	return services, nil
 }
 
@@ -1017,7 +1036,7 @@ func (c *RealDubboClient) getServicesFromDubboRegistry() ([]string, error) {
 	// 读取响应 - 使用动态缓冲区读取完整数据
 	var responseBuffer bytes.Buffer
 	buffer := make([]byte, 8192)
-	
+
 	for {
 		n, err := c.conn.Read(buffer)
 		if err != nil {
@@ -1027,28 +1046,28 @@ func (c *RealDubboClient) getServicesFromDubboRegistry() ([]string, error) {
 			}
 			return nil, fmt.Errorf("读取服务列表响应失败: %v", err)
 		}
-		
+
 		responseBuffer.Write(buffer[:n])
-		
+
 		// 检查是否读取完整
 		if n < len(buffer) {
 			break
 		}
-		
+
 		// 设置较短超时检查更多数据
 		c.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	}
 
 	// 解析响应文本
 	responseText := responseBuffer.String()
-	
+
 	// 提取服务列表
 	services := c.parseServiceList(responseText)
-	
+
 	if len(services) == 0 {
 		return nil, fmt.Errorf("未发现任何服务")
 	}
-	
+
 	return services, nil
 }
 
@@ -1064,22 +1083,22 @@ func (c *RealDubboClient) getServicesFromDirect() ([]string, error) {
 func (c *RealDubboClient) parseServiceList(responseText string) []string {
 	services := make([]string, 0)
 	lines := strings.Split(responseText, "\n")
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		// 跳过空行、提示符和非服务行
-		if line == "" || strings.HasPrefix(line, "dubbo>") || 
-		   strings.Contains(line, "Use") || strings.Contains(line, "help") ||
-		   strings.Contains(line, "PROVIDER") || strings.Contains(line, "CONSUMER") {
+		if line == "" || strings.HasPrefix(line, "dubbo>") ||
+			strings.Contains(line, "Use") || strings.Contains(line, "help") ||
+			strings.Contains(line, "PROVIDER") || strings.Contains(line, "CONSUMER") {
 			continue
 		}
-		
+
 		// 检查是否为有效的服务名（包含包名的格式）
 		if strings.Contains(line, ".") && !strings.Contains(line, " ") {
 			services = append(services, line)
 		}
 	}
-	
+
 	return services
 }
 
@@ -1102,7 +1121,7 @@ func (c *RealDubboClient) ListMethods(serviceName string) ([]string, error) {
 	// 读取响应 - 使用动态缓冲区读取完整数据
 	var responseBuffer bytes.Buffer
 	buffer := make([]byte, 4096)
-	
+
 	for {
 		n, err := c.conn.Read(buffer)
 		if err != nil {
@@ -1113,14 +1132,14 @@ func (c *RealDubboClient) ListMethods(serviceName string) ([]string, error) {
 			// 如果读取失败，返回默认方法列表
 			return c.getDefaultMethods(serviceName), nil
 		}
-		
+
 		responseBuffer.Write(buffer[:n])
-		
+
 		// 检查是否读取完整
 		if n < len(buffer) {
 			break
 		}
-		
+
 		// 设置较短超时检查更多数据
 		c.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	}
@@ -1167,18 +1186,18 @@ func (c *RealDubboClient) Close() error {
 	if c.asyncProcessor != nil {
 		c.asyncProcessor.Stop()
 	}
-	
+
 	// 停止流式处理器
 	if c.streamProcessor != nil {
 		c.streamProcessor.Stop()
 	}
-	
+
 	// 关闭网络连接
 	if c.conn != nil {
 		c.conn.Close()
 		c.connected = false
 	}
-	
+
 	fmt.Println("真实Dubbo客户端已关闭")
 	return nil
 }
@@ -1233,7 +1252,7 @@ func (c *RealDubboClient) formatParameters(params []interface{}) (string, error)
 	if len(params) == 0 {
 		return "", nil
 	}
-	
+
 	var paramStrs []string
 	for _, param := range params {
 		formattedParam, err := c.formatSingleParameter(param)
@@ -1242,7 +1261,7 @@ func (c *RealDubboClient) formatParameters(params []interface{}) (string, error)
 		}
 		paramStrs = append(paramStrs, formattedParam)
 	}
-	
+
 	return strings.Join(paramStrs, ", "), nil
 }
 
@@ -1305,7 +1324,7 @@ func (c *RealDubboClient) formatObjectParameter(obj map[string]interface{}) (str
 		}
 		return string(jsonBytes), nil
 	}
-	
+
 	// 普通对象，直接JSON序列化
 	jsonBytes, err := json.Marshal(obj)
 	if err != nil {
@@ -1320,7 +1339,7 @@ func (c *RealDubboClient) formatArrayParameter(arr []interface{}) (string, error
 	if len(arr) == 0 {
 		return "[]", nil
 	}
-	
+
 	var elements []string
 	for _, element := range arr {
 		formattedElement, err := c.formatSingleParameter(element)
@@ -1358,7 +1377,7 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 			}
 		}
 	}
-	
+
 	// 首先尝试直接解析原始响应作为JSON
 	if strings.HasPrefix(strings.TrimSpace(responseText), "[") {
 		// 尝试直接验证原始响应是否为有效JSON
@@ -1375,7 +1394,7 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 			}
 		}
 	}
-	
+
 	// 如果直接解析失败，使用原来的extractLargestJSON方法
 	jsonResult := c.extractLargestJSON(responseText)
 	if jsonResult != "" {
@@ -1385,24 +1404,24 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 		}
 		return jsonResult
 	}
-	
+
 	// 2. 按行分割响应，逐行检查
 	lines := strings.Split(responseText, "\n")
-	
+
 	// 创建一个新的响应构建器，用于处理多行JSON
 	var resultBuilder strings.Builder
 	foundJSONStart := false
 	jsonStartChar := ""
-	
+
 	for _, line := range lines {
 		// 去除首尾空白字符
 		line = strings.TrimSpace(line)
-		
+
 		// 跳过空行和非JSON行
 		if line == "" || strings.HasPrefix(line, "elapsed:") || strings.HasPrefix(line, "dubbo>") {
 			continue
 		}
-		
+
 		// 检查是否是JSON格式开始
 		if !foundJSONStart {
 			if strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") {
@@ -1416,25 +1435,25 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 				continue
 			}
 		}
-		
+
 		// 如果已经找到JSON开始，继续添加行直到结束
 		if foundJSONStart {
 			resultBuilder.WriteString(line)
-			
+
 			// 检查是否是JSON结束
 			if (jsonStartChar == "{" && strings.HasSuffix(line, "}")) ||
-			   (jsonStartChar == "[" && strings.HasSuffix(line, "]")) {
+				(jsonStartChar == "[" && strings.HasSuffix(line, "]")) {
 				// 尝试解析构建的JSON
-			builtJSON := resultBuilder.String()
-			var jsonTest interface{}
-			decoder := json.NewDecoder(strings.NewReader(builtJSON))
-			decoder.UseNumber()
-			if decoder.Decode(&jsonTest) == nil {
-				return builtJSON
-			}
+				builtJSON := resultBuilder.String()
+				var jsonTest interface{}
+				decoder := json.NewDecoder(strings.NewReader(builtJSON))
+				decoder.UseNumber()
+				if decoder.Decode(&jsonTest) == nil {
+					return builtJSON
+				}
 			}
 		}
-		
+
 		// 检查单行JSON对象或数组
 		if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
 			var jsonTest interface{}
@@ -1444,7 +1463,7 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 				return line
 			}
 		}
-		
+
 		// 检查单行JSON数组
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			var jsonTest interface{}
@@ -1454,7 +1473,7 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 				return line
 			}
 		}
-		
+
 		// 3. 以双引号包围的JSON字符串（如"[{...}]"或"{...}"）
 		if strings.HasPrefix(line, "\"") && strings.HasSuffix(line, "\"") && len(line) > 2 {
 			// 去除外层双引号
@@ -1468,7 +1487,7 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 			}
 		}
 	}
-	
+
 	// 如果构建了JSON但未成功解析，尝试返回构建的结果
 	if foundJSONStart {
 		builtJSON := resultBuilder.String()
@@ -1479,7 +1498,7 @@ func (c *RealDubboClient) cleanResponse(responseText string) string {
 			return builtJSON
 		}
 	}
-	
+
 	// 如果没有找到有效的JSON，返回原始响应
 	return responseText
 }
@@ -1490,7 +1509,7 @@ func (c *RealDubboClient) fixIncompleteJSON(responseText string) string {
 	lastCompleteIndex := -1
 	braceCount := 0
 	inObject := false
-	
+
 	for i, char := range responseText {
 		switch char {
 		case '{':
@@ -1511,11 +1530,11 @@ func (c *RealDubboClient) fixIncompleteJSON(responseText string) string {
 			}
 		}
 	}
-	
+
 	if lastCompleteIndex > 0 {
 		// 截取到最后一个完整对象的位置，并添加数组结束符
 		fixedJSON := responseText[:lastCompleteIndex+1] + "]"
-		
+
 		// 验证修复后的JSON是否有效
 		var jsonTest interface{}
 		decoder := json.NewDecoder(strings.NewReader(fixedJSON))
@@ -1524,7 +1543,7 @@ func (c *RealDubboClient) fixIncompleteJSON(responseText string) string {
 			return fixedJSON
 		}
 	}
-	
+
 	return ""
 }
 
@@ -1532,7 +1551,7 @@ func (c *RealDubboClient) fixIncompleteJSON(responseText string) string {
 func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 	// 查找所有可能的JSON起始位置
 	var candidates []string
-	
+
 	// 查找JSON数组 [...] - 优先处理数组
 	for i := 0; i < len(responseText); i++ {
 		if responseText[i] == '[' {
@@ -1545,7 +1564,7 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 					bracketCount--
 				}
 				if bracketCount == 0 {
-					candidate := responseText[i:j+1]
+					candidate := responseText[i : j+1]
 					// 验证是否为有效JSON
 					var jsonTest interface{}
 					decoder := json.NewDecoder(strings.NewReader(candidate))
@@ -1558,7 +1577,7 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 			}
 		}
 	}
-	
+
 	// 查找JSON对象 {...}
 	for i := 0; i < len(responseText); i++ {
 		if responseText[i] == '{' {
@@ -1571,7 +1590,7 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 					braceCount--
 				}
 				if braceCount == 0 {
-					candidate := responseText[i:j+1]
+					candidate := responseText[i : j+1]
 					// 验证是否为有效JSON
 					var jsonTest interface{}
 					decoder := json.NewDecoder(strings.NewReader(candidate))
@@ -1584,7 +1603,7 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 			}
 		}
 	}
-	
+
 	// 返回最长的有效JSON
 	longestJSON := ""
 	for _, candidate := range candidates {
@@ -1592,7 +1611,7 @@ func (c *RealDubboClient) extractLargestJSON(responseText string) string {
 			longestJSON = candidate
 		}
 	}
-	
+
 	return longestJSON
 }
 
@@ -1606,10 +1625,10 @@ type ResponseCompletionDetector struct {
 func NewResponseCompletionDetector() *ResponseCompletionDetector {
 	return &ResponseCompletionDetector{
 		protocolMarkers: []string{
-			"dubbo>",           // Dubbo命令行结束标志
-			"elapsed:",         // 执行时间标志
-			"ms.",              // 毫秒标志
-			"result:",          // 结果标志
+			"dubbo>",   // Dubbo命令行结束标志
+			"elapsed:", // 执行时间标志
+			"ms.",      // 毫秒标志
+			"result:",  // 结果标志
 		},
 		errorMarkers: []string{
 			"Failed to invoke",
@@ -1625,35 +1644,35 @@ func NewResponseCompletionDetector() *ResponseCompletionDetector {
 // isResponseComplete 检查响应是否完整 - 重构版本
 func (c *RealDubboClient) isResponseComplete(responseText string) bool {
 	detector := NewResponseCompletionDetector()
-	
+
 	// 1. 检查协议标识符完整性
 	if detector.hasProtocolCompletion(responseText) {
 		return true
 	}
-	
+
 	// 2. 检查JSON结构完整性
 	if detector.hasValidJSONStructure(responseText) {
 		return true
 	}
-	
+
 	// 3. 检查错误响应完整性
 	if detector.hasErrorCompletion(responseText) {
 		return true
 	}
-	
+
 	// 4. 检查特殊响应（如null）
 	if detector.hasSpecialResponseCompletion(responseText) {
 		return true
 	}
-	
+
 	return false
 }
 
 // hasProtocolCompletion 检查协议标识符完整性
 func (d *ResponseCompletionDetector) hasProtocolCompletion(responseText string) bool {
 	// Dubbo命令行结束标志 + 执行时间标志
-	if strings.Contains(responseText, "dubbo>") && 
-	   (strings.Contains(responseText, "elapsed:") || strings.Contains(responseText, "ms.")) {
+	if strings.Contains(responseText, "dubbo>") &&
+		(strings.Contains(responseText, "elapsed:") || strings.Contains(responseText, "ms.")) {
 		return true
 	}
 	return false
@@ -1666,7 +1685,7 @@ func (d *ResponseCompletionDetector) hasValidJSONStructure(responseText string) 
 	if jsonContent == "" {
 		return false
 	}
-	
+
 	// 验证JSON结构完整性
 	return d.validateJSONCompleteness(jsonContent)
 }
@@ -1679,14 +1698,14 @@ func (d *ResponseCompletionDetector) extractPotentialJSON(responseText string) s
 			return responseText[startIdx : endIdx+1]
 		}
 	}
-	
+
 	// 查找JSON对象
 	if startIdx := strings.Index(responseText, "{"); startIdx != -1 {
 		if endIdx := strings.LastIndex(responseText, "}"); endIdx > startIdx {
 			return responseText[startIdx : endIdx+1]
 		}
 	}
-	
+
 	return ""
 }
 
