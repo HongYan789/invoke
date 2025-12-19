@@ -1,128 +1,96 @@
-# 注册中心管理系统
+# Dubbo Invoke 使用说明
 
-这是一个用于管理不同类型注册中心的Web界面，特别针对Zookeeper环境提供了预配置的环境选择功能。
+一个支持命令行与 Web UI 的 Dubbo 泛化调用工具，内置智能参数解析、类型提示修正、注册中心环境选择与结果可视化。
 
-## 功能特性
+## 功能总览
 
-### 🎯 核心功能
-- **多注册中心支持**: 支持Zookeeper、Nacos、Dubbo等注册中心类型
-- **Zookeeper环境预配置**: 为Zookeeper提供6个预配置环境（dev、uat、tat、fat、pre、prod）
-- **智能表单切换**: 根据选择的注册中心类型动态显示相应的配置选项
-- **连接测试**: 提供连接测试功能验证配置的有效性
-- **配置持久化**: 自动保存和恢复用户配置
+- 支持 Zookeeper、Nacos、Dubbo 直连等多种注册中心
+- Web UI 与 CLI 双模式，均可执行泛化调用
+- 表达式格式与传统格式两种参数输入方式
+- 大整数与 `Java long` 字面量精度保留
+- 基于类型提示的参数修正（字符串强制保留、复杂对象递归修正）
+- 预置 Zookeeper 环境，快速选择正确地址
 
-### 🌟 Zookeeper环境配置
+## 快速开始
 
-| 环境 | 名称 | 服务器地址 | ZK服务路径 |
-|------|------|------------|------------|
-| dev | 开发环境 | 10.7.8.40:2181 | dubbo |
-| uat | 用户验收测试 | 10.7.8.42:2181 | uat |
-| tat | 技术验收测试 | 10.6.12.153:2181 | tat |
-| fat | 功能验收测试 | 10.6.12.205:2181 | fat |
-| pre | 预生产环境 | mse-4ec83a20-zk.mse.aliyuncs.com:2181 | pre |
-| prod | 生产环境 | mse-2cd54c90-zk.mse.aliyuncs.com:2181 | prod |
+- 启动 Web UI
+  - `go run .` 或 `dubbo-invoke web`
+  - 访问 `http://localhost:8080`
+- 连接注册中心
+  - 在 Web UI 顶部选择注册中心类型
+  - 选择 Zookeeper 的环境，如“开发环境 (dev)”会自动填入 `10.7.8.40:2181`
+  - 构造完整地址例如：`zookeeper://10.7.8.40:2181`
 
-## 使用说明
+## 调用方式
 
-### 📋 基本操作
+- 表达式格式（推荐）
+  - 示例：`invoke com.example.Service.method({"class":"com.example.Param","districtCode":"35058300"})`
+  - Web UI 中的表达式框支持对象、数组、字符串等；类型将自动推断并随请求传递
+- 传统格式（兼容）
+  - 服务名、方法名分别输入
+  - 参数以 JSON 数组输入，如 `[{"class":"com.example.Param","districtCode":35058300}]`
+  - 在“类型”框填写参数类型列表，例如 `com.example.Param`
 
-1. **选择注册中心类型**
-   - 从下拉框中选择注册中心类型（Zookeeper、Nacos、Dubbo）
+## 参数修正与精度
 
-2. **Zookeeper模式**
-   - 选择Zookeeper后，会显示环境选择下拉框
-   - 选择对应环境后，系统会自动填充服务器地址和服务路径
-   - 配置为只读模式，确保环境配置的一致性
+- 类型提示优先生效
+  - 当类型提示为 `java.lang.String` 时，参数将被强制按字符串处理
+  - 当类型提示为 `java.lang.Object` 或自定义类（如 `com.xxx.Param`）时，复杂对象中的数值会递归转为字符串，避免 Java Bean 设值时发生类型不匹配
+- 大整数与 `Java long` 字面量
+  - 前端参数解析保留 16 位及以上整数为字符串，避免精度丢失
+  - 后端使用 `json.Number` 解析并在返回结果中保留大整数精度
+- 传统与表达式两种格式均已启用上述修正策略
 
-3. **其他注册中心模式**
-   - 选择Nacos或Dubbo后，显示自定义配置输入框
-   - 可以手动输入服务器地址和服务路径
-   - 保持原有的灵活配置方式
+## 复杂对象示例与错误修复
 
-4. **测试连接**
-   - 点击"测试连接"按钮验证配置
-   - 系统会显示连接状态和结果
+- 问题示例
+  - 错误：`argument type mismatch`（如为 Java Bean 属性 `districtCode` 期望 `String` 却传入 `Integer`）
+- 解决方式
+  - 表达式格式：在对象中将 `districtCode` 明确写为字符串
+    - `invoke com.xxx.Api.dzsyRegister({"class":"com.xxx.DzsyRegParam","districtCode":"35058300"})`
+  - 传统格式：在“类型”中填写 `com.xxx.DzsyRegParam`，工具会递归把对象里的数值转为字符串，消除类型不匹配
 
-5. **保存配置**
-   - 点击"保存配置"按钮持久化当前设置
-   - 配置会保存到浏览器本地存储
+## CLI 用法
 
-### ⌨️ 快捷键
+- 传统格式
+  - `dubbo-invoke invoke com.xxx.Api dzsyRegister '{"class":"com.xxx.DzsyRegParam","districtCode":35058300}' -T com.xxx.DzsyRegParam`
+- 表达式格式
+  - `dubbo-invoke invoke 'com.xxx.Api.dzsyRegister({"class":"com.xxx.DzsyRegParam","districtCode":"35058300"})'`
+- 常用全局参数
+  - `-r` 指定注册中心地址：`-r zookeeper://10.7.8.40:2181`
+  - `-a` 应用名：`-a dubbo-invoke-client`
+  - `-t` 超时毫秒：`-t 10000`
 
-- `Ctrl + S`: 保存配置
-- `Ctrl + R`: 重置表单
-- `Ctrl + T`: 测试连接
+## Web API（便于验证）
 
-## 文件结构
+- 列服务：`GET /api/list?registry=zookeeper://10.7.8.40:2181&app=dubbo-invoke-client&timeout=10000`
+- 调用：`POST /api/invoke`（JSON 包含 `serviceName`、`methodName`、`parameters`、`types` 等）
+- 精度测试：`GET /api/test-precision`
 
-```
-├── index.html          # 主界面文件
-├── styles.css          # 样式文件
-├── script.js           # 主要逻辑文件
-├── config.js           # 配置文件
-└── README.md           # 说明文档
-```
+## 预置 Zookeeper 环境
 
-## 技术特点
+| 环境 | 地址 | 服务路径 |
+|---|---|---|
+| dev | 10.7.8.40:2181 | dubbo |
+| uat | 10.7.8.42:2181 | uat |
+| tat | 10.6.12.153:2181 | tat |
+| fat | 10.6.12.205:2181 | fat |
+| pre | mse-4ec83a20-zk.mse.aliyuncs.com:2181 | pre |
+| prod | mse-2cd54c90-zk.mse.aliyuncs.com:2181 | prod |
 
-### 🔧 技术实现
-- **纯前端实现**: 使用HTML5、CSS3、JavaScript ES6+
-- **响应式设计**: 支持桌面和移动设备
-- **模块化架构**: 配置与逻辑分离，便于维护
-- **本地存储**: 使用localStorage持久化配置
+在 Web UI 选择环境后会自动填入地址与服务路径；Zookeeper 会以服务路径作为 `namespace` 构建真实查询路径。
 
-### 🎨 界面特性
-- **现代化UI**: 采用卡片式设计和渐变色彩
-- **动画效果**: 平滑的过渡动画和状态指示
-- **状态反馈**: 实时的连接状态和操作反馈
-- **无障碍设计**: 良好的键盘导航和屏幕阅读器支持
+## 关键实现位置
 
-## 扩展说明
+- Web 参数修正：`web_server.go:917` 的 `applyTypeHints`
+- 传统格式解析：`commands.go:269` 的 `parseParams`
+- 大整数精度处理：`web_server.go:871` 的 `convertJSONNumber`
+- 构建真实调用命令：`web_server.go:607` 的 `buildDubboInvokeCommand`
+- ZK 环境接口：`web_server.go:3760` 的 `handleZkEnvironments`
 
-### 添加新环境
-如需添加新的Zookeeper环境，请修改 `config.js` 文件中的 `ZOOKEEPER_ENVIRONMENTS` 对象：
+## 启动与验证
 
-```javascript
-const ZOOKEEPER_ENVIRONMENTS = {
-    // 现有环境...
-    newenv: {
-        name: '新环境名称',
-        address: '新服务器地址:端口',
-        servicePath: '新服务路径'
-    }
-};
-```
-
-然后在 `index.html` 中添加对应的选项：
-
-```html
-<option value="newenv">新环境名称 (newenv)</option>
-```
-
-### 添加新注册中心类型
-在 `config.js` 中的 `REGISTRY_TYPES` 对象中添加新类型配置，并在相应的处理函数中添加逻辑。
-
-## 浏览器兼容性
-
-- Chrome 60+
-- Firefox 55+
-- Safari 12+
-- Edge 79+
-
-## 注意事项
-
-⚠️ **重要提醒**:
-- Zookeeper模式下的环境配置为只读，确保配置一致性
-- 其他注册中心类型保持原有的灵活配置方式
-- 连接测试功能当前为模拟实现，实际部署时需要连接真实的后端API
-- 配置信息存储在浏览器本地，清除浏览器数据会丢失保存的配置
-
-## 开发建议
-
-如需集成到实际项目中，建议：
-
-1. **后端集成**: 将连接测试功能连接到实际的后端API
-2. **安全考虑**: 对敏感配置信息进行加密存储
-3. **错误处理**: 完善网络异常和服务异常的处理逻辑
-4. **日志记录**: 添加操作日志和审计功能
-5. **权限控制**: 根据用户角色限制可访问的环境
+- 启动 Web UI：`go run .`
+- 打开浏览器访问：`http://localhost:8080`
+- 选择 Zookeeper → 开发环境 (dev) → 地址自动填入 `10.7.8.40:2181`
+- 使用表达式或传统格式进行调用，并观察结果面板中大整数与类型修正效果

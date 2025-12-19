@@ -113,7 +113,7 @@ func runInvokeCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	// 直接使用原始结果，不进行额外的数据包装处理
-		processedResult := result
+	processedResult := result
 
 	// 输出结果
 	color.Green("调用成功:")
@@ -298,7 +298,7 @@ func processLSuffixParam(param string) interface{} {
 		}
 		return match
 	})
-	
+
 	// 尝试解析为JSON
 	decoder := json.NewDecoder(strings.NewReader(processedParam))
 	decoder.UseNumber()
@@ -306,13 +306,36 @@ func processLSuffixParam(param string) interface{} {
 	if err := decoder.Decode(&jsonValue); err == nil {
 		return convertJSONNumber(jsonValue)
 	}
-	
+
 	// 如果解析失败，返回原始参数
 	return param
 }
 
 func parseParams(params []string, types []string) ([]interface{}, error) {
 	result := make([]interface{}, len(params))
+	var deepToString func(v interface{}) interface{}
+	deepToString = func(v interface{}) interface{} {
+		switch x := v.(type) {
+		case json.Number:
+			return string(x)
+		case float64, float32, int64, int32, int, uint64, uint32, uint:
+			return fmt.Sprintf("%v", x)
+		case []interface{}:
+			out := make([]interface{}, len(x))
+			for i := range x {
+				out[i] = deepToString(x[i])
+			}
+			return out
+		case map[string]interface{}:
+			out := make(map[string]interface{}, len(x))
+			for k, vv := range x {
+				out[k] = deepToString(vv)
+			}
+			return out
+		default:
+			return v
+		}
+	}
 
 	for i, param := range params {
 		// 检查原始参数是否包含L后缀的大整数
@@ -322,17 +345,27 @@ func parseParams(params []string, types []string) ([]interface{}, error) {
 			result[i] = processed
 			continue
 		}
-		
+
 		// 预处理：移除JSON中的L后缀
 		processedParam := removeLSuffix(param)
-		
+
 		// 尝试解析为JSON，使用json.Number保持精度
 		decoder := json.NewDecoder(strings.NewReader(processedParam))
 		decoder.UseNumber()
 		var jsonValue interface{}
 		if err := decoder.Decode(&jsonValue); err == nil {
-			// 转换json.Number以保持精度
-			result[i] = convertJSONNumber(jsonValue)
+			// 根据类型提示进行修正
+			t := ""
+			if i < len(types) {
+				t = strings.TrimSpace(types[i])
+			}
+			if t == "java.lang.String" || t == "string" {
+				result[i] = fmt.Sprintf("%v", jsonValue)
+			} else if t == "java.lang.Object" || strings.HasPrefix(t, "com.") || strings.Contains(t, ".") {
+				result[i] = deepToString(jsonValue)
+			} else {
+				result[i] = convertJSONNumber(jsonValue)
+			}
 			continue
 		}
 
@@ -397,6 +430,112 @@ func parseByType(param, paramType string) (interface{}, error) {
 		err := decoder.Decode(&value)
 		if err != nil {
 			return nil, err
+		}
+		if paramType == "java.lang.Object" || strings.HasPrefix(paramType, "com.") || strings.Contains(paramType, ".") {
+			// 深度将数值转换为字符串，避免对象字段类型不匹配
+			return func(v interface{}) interface{} {
+				switch x := v.(type) {
+				case json.Number:
+					return string(x)
+				case float64, float32, int64, int32, int, uint64, uint32, uint:
+					return fmt.Sprintf("%v", x)
+				case []interface{}:
+					out := make([]interface{}, len(x))
+					for i := range x {
+						out[i] = func(y interface{}) interface{} {
+							switch yy := y.(type) {
+							case json.Number:
+								return string(yy)
+							case float64, float32, int64, int32, int, uint64, uint32, uint:
+								return fmt.Sprintf("%v", yy)
+							case []interface{}:
+								inner := make([]interface{}, len(yy))
+								for j := range yy {
+									inner[j] = func(z interface{}) interface{} {
+										switch zz := z.(type) {
+										case json.Number:
+											return string(zz)
+										case float64, float32, int64, int32, int, uint64, uint32, uint:
+											return fmt.Sprintf("%v", zz)
+										case []interface{}:
+											return yy // unreachable in nested inline; keep simple
+										case map[string]interface{}:
+											m := make(map[string]interface{}, len(zz))
+											for k, vv := range zz {
+												m[k] = func(tv interface{}) interface{} {
+													switch tt := tv.(type) {
+													case json.Number:
+														return string(tt)
+													case float64, float32, int64, int32, int, uint64, uint32, uint:
+														return fmt.Sprintf("%v", tt)
+													case []interface{}:
+														ii := make([]interface{}, len(tt))
+														for p := range tt {
+															ii[p] = tt[p]
+														}
+														return ii
+													case map[string]interface{}:
+														return tt
+													default:
+														return tv
+													}
+												}(vv)
+											}
+											return m
+										default:
+											return z
+										}
+									}(yy[j])
+								}
+								return inner
+							case map[string]interface{}:
+								m := make(map[string]interface{}, len(yy))
+								for k, vv := range yy {
+									m[k] = func(tv interface{}) interface{} {
+										switch tt := tv.(type) {
+										case json.Number:
+											return string(tt)
+										case float64, float32, int64, int32, int, uint64, uint32, uint:
+											return fmt.Sprintf("%v", tt)
+										case []interface{}:
+											return tt
+										case map[string]interface{}:
+											return tt
+										default:
+											return tv
+										}
+									}(vv)
+								}
+								return m
+							default:
+								return y
+							}
+						}(x[i])
+					}
+					return out
+				case map[string]interface{}:
+					out := make(map[string]interface{}, len(x))
+					for k, vv := range x {
+						out[k] = func(tv interface{}) interface{} {
+							switch tt := tv.(type) {
+							case json.Number:
+								return string(tt)
+							case float64, float32, int64, int32, int, uint64, uint32, uint:
+								return fmt.Sprintf("%v", tt)
+							case []interface{}:
+								return tt
+							case map[string]interface{}:
+								return tt
+							default:
+								return tv
+							}
+						}(vv)
+					}
+					return out
+				default:
+					return v
+				}
+			}(value), nil
 		}
 		return convertJSONNumber(value), nil
 	}

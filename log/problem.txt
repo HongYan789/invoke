@@ -1,0 +1,156 @@
+现在咱们的invoke工局针对于简单的参数支持是不错的，值得鼓励，但是针对于复杂的参数支持却不优化，例如我提供一个例子：
+该接口定义如下：
+ResponseResult dzsyRegister(DzsyRegParam param);
+该接口的入参对象如下：
+public class DzsyRegParam implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @ApiModelProperty("企业Id")
+    private Long companyId;
+
+    @ApiModelProperty(value = "基础信息", required = true)
+    private TenantInfo tenantInfo;
+
+    @ApiModelProperty(value = "管理员信息", required = true)
+    private JzzcTenantAdminInfo tenantAdminInfo;
+
+    @ApiModelProperty("公章信息")
+    private JzzcTenantSealInfo tenantSealInfo;
+
+    @ApiModelProperty(
+            value = "是否CA",
+            required = false
+    )
+    private Boolean whetherCa;
+
+    @ApiModelProperty(value = "个人手机发票信息路径")
+    private String invoiceUrl;
+
+    @ApiModelProperty("目标租户id")
+    private Long targetTenantId;
+
+
+}
+public class TenantInfo implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @NotNull
+    @ApiModelProperty(value = "是否三证合一", required = true)
+    private Boolean isLicenseUnion;
+
+    
+    @ApiModelProperty(value = "社会统一信用码/组织机构代码/登记号", required = true)
+    private String code;
+
+    
+    @ApiModelProperty(value = "企业名称", required = true)
+    private String tenantName;
+
+    @NotNull
+    @ApiModelProperty(value = "注册企业类型", required = true)
+    private String registerTenantType;
+
+    
+    @ApiModelProperty(value = "归属地--省", required = true)
+    private String provinceCode;
+
+    
+    @ApiModelProperty(value = "归属地--市", required = true)
+    private String cityCode;
+
+    
+    @ApiModelProperty(value = "归属地--区", required = true)
+    private String districtCode;
+
+    
+    @ApiModelProperty(value = "地址", required = true)
+    private String address;
+
+    
+    @ApiModelProperty(value = "法定代表人/经营者/投资者", required = true)
+    private String owner;
+
+    @ApiModelProperty(value = "经营期限;9999-12-31为长期有效", required = true)
+    private String expirationDate;
+
+    
+    @ApiModelProperty(value = "证件地址", required = true)
+    private String fileUrl;
+
+    
+    @Pattern(regexp = "^1|2|3$", message = "租户类型超出范围（1:店铺；2:商户；3:客户）")
+    @ApiModelProperty(value = "租户类型，1:店铺；2:商户；3:客户", required = true)
+    private String tenantFlag;
+
+    @ApiModelProperty(value = "组织机构类别（枚举CompanyType)，默认为企业", required = true)
+    private String companyType;
+
+}
+public class JzzcTenantAdminInfo implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @ApiModelProperty(value = "姓名", required = true)
+    private String name;
+
+    @ApiModelProperty(value = "身份证号", required = true)
+    private String cardNumber;
+
+    @ApiModelProperty(value = "管理员身份证有效期;9999-12-31为长期有效", required = true)
+    private String cardExpirationDate;
+
+    @ApiModelProperty(value = "身份证人像面地址", required = true)
+    private String cardPortraitUrl;
+
+    @ApiModelProperty(value = "身份证国徽面地址", required = true)
+    private String cardEmblemUrl;
+
+    @ApiModelProperty(value = "是否是法人", required = true)
+    private Boolean isLegalPerson;
+
+    @ApiModelProperty(value = "委托书地址", required = true)
+    private String commissionUrl;
+
+    @ApiModelProperty(value = "委托书有效期;9999-12-31为长期有效", required = true)
+    private String commissionExpirationDate;
+
+    @ApiModelProperty(value = "手机号", required = true)
+    private String phoneNumber;
+}
+public class JzzcTenantSealInfo implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @ApiModelProperty(value = "印章地址", required = true)
+    private String sealUrl;
+}
+
+咱们提供的invoke接口参数如下：
+invoke com.jzt.zhcai.user.userb2b.UserB2bQualificationApi.dzsyRegister({"class":"com.jzt.zhcai.user.dzsy.vo.DzsyRegParam","companyId":1262799,"targetTenantId":573994,"tenantAdminInfo":{"class":"com.jzt.zhcai.user.dzsy.vo.JzzcTenantAdminInfo","cardEmblemUrl":"/20250822/17558262193055e54.jpg","cardExpirationDate":"2035-12-22","cardNumber":"35058319810415005X","cardPortraitUrl":"/20250822/1755826213724428e.jpg","isLegalPerson":true,"name":"huangwenyuan","phoneNumber":"13799223457"},"tenantInfo":{"class":"com.jzt.zhcai.user.dzsy.vo.TenantInfo","address":"fujian349","cityCode":"3505","code":"CESHI3213213211","districtCode":"35058300","expirationDate":"2999-12-31","fileUrl":"/20230814/1691979338592612.jpg","isLicenseUnion":true,"owner":"huangwenyuan","provinceCode":"35","registerTenantType":"type1","companyType":"type1","tenantFlag":"3","tenantName":"testName"},"whetherCa":true})
+
+最终页面html解析出的参数情况如下：
+  {
+    "id": "1766117002767035000",
+    "serviceName": "com.jzt.zhcai.user.userb2b.UserB2bQualificationApi",
+    "methodName": "dzsyRegister",
+    "parameters": [
+      "{\"class\":\"com.jzt.zhcai.user.dzsy.vo.DzsyRegParam\",\"companyId\":1262799,\"targetTenantId\":573994,\"tenantAdminInfo\":{\"class\":\"com.jzt.zhcai.user.dzsy.vo.JzzcTenantAdminInfo\",\"cardEmblemUrl\":\"/20250822/17558262193055e54.jpg\",\"cardExpirationDate\":\"2035-12-22\",\"cardNumber\":\"35058319810415005X\",\"cardPortraitUrl\":\"/20250822/1755826213724428e.jpg\",\"isLegalPerson\":true,\"name\":\"huangwenyuan\",\"phoneNumber\":\"13799223457\"},\"tenantInfo\":{\"class\":\"com.jzt.zhcai.user.dzsy.vo.TenantInfo\",\"address\":\"fujian349\",\"cityCode\":\"3505\",\"code\":\"CESHI3213213211\",\"districtCode\":\"35058300\",\"expirationDate\":\"2999-12-31\",\"fileUrl\":\"/20230814/\"1691979338592612\".jpg\",\"isLicenseUnion\":true,\"owner\":\"huangwenyuan\",\"provinceCode\":\"35\",\"registerTenantType\":\"type1\",\"companyType\":\"type1\",\"tenantFlag\":\"3\",\"tenantName\":\"testName\"},\"whetherCa\":true}"
+    ],
+    "types": [
+      "java.lang.String"
+    ],
+    "registry": "dubbo://10.3.81.104:16002",
+    "app": "dubbo-invoke-client",
+    "success": false,
+    "timestamp": "2025-12-19T12:03:22.767035+08:00",
+    "result": "真实调用失败: 调用失败，未获得有效响应: No such method dzsyRegister in service com.jzt.zhcai.user.userb2b.UserB2bQualificationApi\r\ndubbo>",
+    "duration": 115,
+    "namespace": "dubbo"
+  }
+
+最终DUBBO CMD执行的命令如下：
+[DUBBO CMD] invoke com.jzt.zhcai.user.userb2b.UserB2bQualificationApi.dzsyRegister("{\"class\":\"com.jzt.zhcai.user.dzsy.vo.DzsyRegParam\",\"companyId\":1262799,\"targetTenantId\":573994,\"tenantAdminInfo\":{\"class\":\"com.jzt.zhcai.user.dzsy.vo.JzzcTenantAdminInfo\",\"cardEmblemUrl\":\"/20250822/17558262193055e54.jpg\",\"cardExpirationDate\":\"2035-12-22\",\"cardNumber\":\"35058319810415005X\",\"cardPortraitUrl\":\"/20250822/1755826213724428e.jpg\",\"isLegalPerson\":true,\"name\":\"huangwenyuan\",\"phoneNumber\":\"13799223457\"},\"tenantInfo\":{\"class\":\"com.jzt.zhcai.user.dzsy.vo.TenantInfo\",\"address\":\"fujian349\",\"cityCode\":\"3505\",\"code\":\"CESHI3213213211\",\"districtCode\":\"35058300\",\"expirationDate\":\"2999-12-31\",\"fileUrl\":\"/20230814/\"1691979338592612\".jpg\",\"isLicenseUnion\":true,\"owner\":\"huangwenyuan\",\"provinceCode\":\"35\",\"registerTenantType\":\"type1\",\"companyType\":\"type1\",\"tenantFlag\":\"3\",\"tenantName\":\"testName\"},\"whetherCa\":true}")
+
+请帮忙解决该问题，使其能够正常解析并执行该dubbo invoke命令  

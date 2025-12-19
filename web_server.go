@@ -529,6 +529,10 @@ func (ws *WebServer) executeInvoke(req InvokeRequest, params []interface{}) (int
 
 	// 使用传入的已解析参数
 	color.Green("[WEB] 使用已解析的参数，参数数量: %d", len(params))
+	// 根据类型提示进行参数修正（例如明确指定为字符串类型时，强制使用字符串）
+	if len(req.Types) > 0 {
+		params = applyTypeHints(req.Types, params)
+	}
 
 	// 智能类型补全：当无类型信息且仅一个参数为List时，自动设置为java.util.List
 	if len(req.Types) == 0 && len(params) == 1 {
@@ -737,9 +741,26 @@ func (ws *WebServer) handleMethods(w http.ResponseWriter, r *http.Request) {
 // writeError 写入错误响应
 // safeCopyParameters 安全复制参数，将大整数转换为字符串以避免精度丢失
 // convertJSONNumbers 将json.Number转换为适当的类型，保持大整数精度
+func maybeParseJSONString(s string) interface{} {
+	st := strings.TrimSpace(s)
+	if (strings.HasPrefix(st, "{") && strings.HasSuffix(st, "}")) ||
+		(strings.HasPrefix(st, "[") && strings.HasSuffix(st, "]")) {
+		var v interface{}
+		decoder := json.NewDecoder(strings.NewReader(st))
+		decoder.UseNumber()
+		if err := decoder.Decode(&v); err == nil {
+			return v
+		}
+	}
+	return s
+}
+
 func convertJSONNumbers(params []interface{}) []interface{} {
 	result := make([]interface{}, len(params))
 	for i, param := range params {
+		if str, ok := param.(string); ok {
+			param = maybeParseJSONString(str)
+		}
 		result[i] = convertJSONNumber(param)
 	}
 	return result
@@ -773,6 +794,9 @@ func (ws *WebServer) processParametersWithBigIntSupport(rawParams json.RawMessag
 	decoder.UseNumber()
 	err = decoder.Decode(&singleParam)
 	if err == nil {
+		if str, ok := singleParam.(string); ok {
+			singleParam = maybeParseJSONString(str)
+		}
 		result := []interface{}{convertJSONNumber(singleParam)}
 		color.Green("[WEB] 解析为单参数格式，参数数量: 1")
 		return result, nil
@@ -893,27 +917,64 @@ func convertJSONNumber(value interface{}) interface{} {
 
 // convertBigIntString 处理来自前端BigInt的字符串格式
 func convertBigIntString(s string) interface{} {
-	// 检查是否为纯数字字符串（可能是BigInt）
-	if matched, _ := regexp.MatchString(`^-?\d+$`, s); matched {
-		// 尝试转换为int64
-		if intVal, err := strconv.ParseInt(s, 10, 64); err == nil {
-			// 检查是否超过JavaScript安全整数范围
-			if intVal > 9007199254740991 || intVal < -9007199254740991 {
-				return s // 保持字符串格式避免精度丢失
-			}
-			return intVal
-		}
-		// 如果无法转换为int64，保持字符串格式
-		return s
-	}
-	// 检查是否为浮点数字符串
-	if matched, _ := regexp.MatchString(`^-?\d+\.\d+$`, s); matched {
-		if floatVal, err := strconv.ParseFloat(s, 64); err == nil {
-			return floatVal
-		}
-	}
-	// 不是数字格式，返回原始字符串
 	return s
+}
+
+func applyTypeHints(types []string, params []interface{}) []interface{} {
+	if len(types) == 0 || len(params) == 0 {
+		return params
+	}
+	res := make([]interface{}, len(params))
+	var deepToString func(v interface{}) interface{}
+	deepToString = func(v interface{}) interface{} {
+		switch x := v.(type) {
+		case json.Number:
+			return string(x)
+		case float64, float32, int64, int32, int, uint64, uint32, uint:
+			return fmt.Sprintf("%v", x)
+		case []interface{}:
+			out := make([]interface{}, len(x))
+			for i := range x {
+				out[i] = deepToString(x[i])
+			}
+			return out
+		case map[string]interface{}:
+			out := make(map[string]interface{}, len(x))
+			for k, vv := range x {
+				out[k] = deepToString(vv)
+			}
+			return out
+		default:
+			return v
+		}
+	}
+	for i := range params {
+		t := ""
+		if i < len(types) {
+			t = types[i]
+		}
+		p := params[i]
+		switch t {
+		case "java.lang.String", "string":
+			switch v := p.(type) {
+			case string:
+				res[i] = v
+			case json.Number:
+				res[i] = string(v)
+			default:
+				res[i] = fmt.Sprintf("%v", v)
+			}
+		case "java.lang.Object":
+			res[i] = deepToString(p)
+		default:
+			if strings.HasPrefix(t, "com.") || strings.Contains(t, ".") {
+				res[i] = deepToString(p)
+			} else {
+				res[i] = p
+			}
+		}
+	}
+	return res
 }
 
 func safeCopyParameters(params []interface{}) []interface{} {
@@ -2105,11 +2166,60 @@ const indexHTML = `<!DOCTYPE html>
                 // 首先移除Java long字面量的L后缀
                 let cleanText = text.replace(/(\d+(?:\.\d+)?)L([^a-zA-Z0-9]|$)/g, '$1$2');
                 
-                // 在JSON.parse之前，将大整数转换为字符串，避免精度丢失
-                // 匹配超过15位的整数（JavaScript安全整数范围）
-                cleanText = cleanText.replace(/([^"\w]|^)(-?\d{16,})([^"\w]|$)/g, function(match, prefix, number, suffix) {
-                    return prefix + '"' + number + '"' + suffix;
-                });
+                // 仅在非字符串上下文中将超过15位的整数包装为字符串
+                (function() {
+                    let s = cleanText;
+                    let res = '';
+                    let inQuotes = false;
+                    let escapeNext = false;
+                    let i = 0;
+                    while (i < s.length) {
+                        const ch = s[i];
+                        if (escapeNext) {
+                            res += ch;
+                            escapeNext = false;
+                            i++;
+                            continue;
+                        }
+                        if (ch === '\\') {
+                            res += ch;
+                            escapeNext = true;
+                            i++;
+                            continue;
+                        }
+                        if (ch === '"') {
+                            res += ch;
+                            inQuotes = !inQuotes;
+                            i++;
+                            continue;
+                        }
+                        if (!inQuotes && (ch === '-' || (ch >= '0' && ch <= '9'))) {
+                            let j = i;
+                            if (ch === '-') j++;
+                            while (j < s.length && s[j] >= '0' && s[j] <= '9') j++;
+                            const num = s.slice(i, j);
+                            let hasL = false;
+                            if (j < s.length && s[j] === 'L') {
+                                hasL = true;
+                                j++;
+                            }
+                            const prev = res.length ? res[res.length - 1] : '';
+                            const next = j < s.length ? s[j] : '';
+                            const prevWord = /[A-Za-z0-9_]/.test(prev);
+                            const nextWord = /[A-Za-z0-9_.]/.test(next);
+                            if (num.length >= 16 && !prevWord && !nextWord) {
+                                res += '"' + num + '"';
+                            } else {
+                                res += s.slice(i, j);
+                            }
+                            i = j;
+                            continue;
+                        }
+                        res += ch;
+                        i++;
+                    }
+                    cleanText = res;
+                })();
                 
                 try {
                     return JSON.parse(cleanText, function(key, value) {
