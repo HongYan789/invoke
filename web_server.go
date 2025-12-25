@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -126,6 +127,7 @@ func (ws *WebServer) Start() error {
 
 	// 设置路由
 	http.HandleFunc("/", ws.handleIndex)
+	http.HandleFunc("/simple", ws.handleSimple)
 	http.HandleFunc("/api/invoke", ws.handleInvoke)
 	http.HandleFunc("/api/list", ws.handleList)
 	http.HandleFunc("/api/methods", ws.handleMethods)
@@ -169,6 +171,55 @@ func (ws *WebServer) Start() error {
 		return err
 	}
 	return nil
+}
+
+// handleTestConnection 处理连接测试
+func (ws *WebServer) handleTestConnection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != "POST" {
+		ws.writeError(w, "只支持POST方法")
+		return
+	}
+
+	var req struct {
+		Address string `json:"address"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		ws.writeError(w, fmt.Sprintf("请求解析失败: %v", err))
+		return
+	}
+
+	if req.Address == "" {
+		ws.writeError(w, "地址不能为空")
+		return
+	}
+
+	// 解析地址，如果包含协议前缀则去除
+	address := req.Address
+	if idx := strings.Index(address, "://"); idx != -1 {
+		address = address[idx+3:]
+	}
+
+	// 尝试建立TCP连接
+	conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+	if err != nil {
+		response := map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("连接失败: %v", err),
+		}
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+	defer conn.Close()
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "连接成功",
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleIndex 处理首页
