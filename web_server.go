@@ -126,10 +126,12 @@ func (ws *WebServer) Start() error {
 	ws.history = make([]CallHistory, 0)
 
 	// 设置路由
-	http.HandleFunc("/", ws.handleIndex)
+	http.HandleFunc("/", ws.handleSimple)
+	http.HandleFunc("/full", ws.handleIndex)
 	http.HandleFunc("/simple", ws.handleSimple)
 	http.HandleFunc("/api/invoke", ws.handleInvoke)
 	http.HandleFunc("/api/list", ws.handleList)
+	http.HandleFunc("/api/check-connection", ws.handleCheckConnection)
 	http.HandleFunc("/api/methods", ws.handleMethods)
 	http.HandleFunc("/api/example", ws.handleExample)
 	http.HandleFunc("/api/history", ws.handleHistory)
@@ -443,6 +445,91 @@ func (ws *WebServer) handleList(w http.ResponseWriter, r *http.Request) {
 	response := ListServicesResponse{
 		Success:  true,
 		Services: services,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleCheckConnection 处理连接检查（轻量级）
+func (ws *WebServer) handleCheckConnection(w http.ResponseWriter, r *http.Request) {
+	color.Green("[WEB] 收到连接检查请求: %s %s", r.Method, r.URL.Path)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// 处理POST请求的JSON数据
+	var registry, app, namespace string
+	if r.Method == "POST" {
+		var requestData struct {
+			Registry  string `json:"registry"`
+			App       string `json:"app"`
+			Namespace string `json:"namespace"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			color.Red("[WEB] 解析请求数据失败: %v", err)
+			response := map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("解析请求数据失败: %v", err),
+			}
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		registry = requestData.Registry
+		app = requestData.App
+		namespace = requestData.Namespace
+	} else {
+		// 处理GET请求的查询参数
+		registry = r.URL.Query().Get("registry")
+		app = r.URL.Query().Get("app")
+		namespace = r.URL.Query().Get("namespace")
+	}
+
+	if registry == "" {
+		registry = ws.registry
+	}
+	if app == "" {
+		app = ws.app
+	}
+
+	// 创建dubbo客户端配置
+	config := &DubboConfig{
+		Registry:    registry,
+		Application: app,
+		Timeout:     time.Duration(ws.timeout) * time.Millisecond,
+		Namespace:   namespace,
+	}
+	color.Cyan("[WEB] 创建Dubbo客户端配置(仅检查连接): 注册中心=%s, 应用=%s, 超时=%dms", config.Registry, config.Application, ws.timeout)
+
+	// 创建真实的dubbo客户端
+	// NewRealDubboClient 内部会尝试连接注册中心，如果连接失败会返回错误
+	client, err := NewRealDubboClient(config)
+	if err != nil {
+		color.Red("[WEB] 连接注册中心失败: %v", err)
+		response := map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("连接注册中心失败: %v", err),
+		}
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+	defer client.Close()
+	color.Blue("[WEB] Dubbo客户端创建成功")
+
+	// 检查连接状态
+	color.Blue("[WEB] 检查Dubbo客户端连接状态")
+	if !client.IsConnected() {
+		color.Red("[WEB] 无法连接到Dubbo注册中心")
+		response := map[string]interface{}{
+			"success": false,
+			"error":   "无法连接到dubbo注册中心",
+		}
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+	color.Green("[WEB] Dubbo客户端连接成功")
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "连接成功",
 	}
 
 	json.NewEncoder(w).Encode(response)

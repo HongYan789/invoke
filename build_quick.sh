@@ -40,8 +40,16 @@ echo "🍎 构建 Mac amd64 (Intel)..."
 GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o release/dubbo-invoke-darwin-amd64 .
 
 # 构建Mac arm64 (Apple Silicon)
-echo "🍎 构建 Mac arm64 (Apple Silicon)..."
+echo "🍎🍎 构建 Mac arm64 (Apple Silicon)..."
+# 临时移除 resource.syso 文件
+if [ -f "resource.syso" ]; then
+    mv resource.syso resource.syso.bak
+fi
 GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o release/dubbo-invoke-darwin-arm64 .
+# 恢复 resource.syso 文件
+if [ -f "resource.syso.bak" ]; then
+    mv resource.syso.bak resource.syso
+fi
 
 # 构建Windows amd64
 echo "🪟 构建 Windows amd64..."

@@ -2,6 +2,18 @@
 
 一个支持命令行与 Web UI 的 Dubbo 泛化调用工具，内置智能参数解析、类型提示修正、注册中心环境选择与结果可视化。
 
+## 最新版本更新 (v2.0)
+
+Dubbo 测试工具进行了重大升级，主要更新如下：
+
+1.  **页面更简洁**：默认启用全新的精简版 Web UI，专注于服务调用与结果展示，操作更加流畅高效。
+    *   保留了老版（完整版）入口，可通过页面底部链接跳转。
+2.  **支持复杂的 Dubbo 参数调用**：
+    *   全面升级了参数解析引擎，支持复杂的嵌套对象、泛型集合等复杂结构。
+    *   支持大整数（如 `Long` 类型 ID）的无损传输与展示，解决了 JavaScript `Number` 类型精度丢失问题。
+3.  **优化数字类型跟字符串类型错误匹配的问题**：
+    *   增强了类型推断机制，智能识别并修正数字与字符串之间的类型不匹配问题，减少了 `argument type mismatch` 错误。
+
 ## 功能总览
 
 - 支持 Zookeeper、Nacos、Dubbo 直连等多种注册中心
@@ -91,6 +103,55 @@
 ## 启动与验证
 
 - 启动 Web UI：`go run .`
-- 打开浏览器访问：`http://localhost:8080`
+- 打开浏览器访问：`http://localhost:8080`（默认进入精简版页面）
+  - 如需访问完整版页面，请点击页面底部的“体验完整版”链接或访问 `http://localhost:8080/full`
 - 选择 Zookeeper → 开发环境 (dev) → 地址自动填入 `10.7.8.40:2181`
 - 使用表达式或传统格式进行调用，并观察结果面板中大整数与类型修正效果
+
+## 项目构建
+
+如果你需要编译生成可执行文件（如 `dubbo-invoke` 或 `dubbo-invoke.exe`），可以使用以下方式：
+
+### 1. 基础构建 (当前系统)
+
+```bash
+# 构建默认名称 (dubbo-invoke)
+go build .
+
+# 如果你想构建为 dubbo-invoke-cli (仅名字不同，功能一致)
+go build -o dubbo-invoke-cli .
+```
+
+构建完成后，当前目录下会生成 `dubbo-invoke` 或 `dubbo-invoke-cli` 可执行文件。这些文件通常用于**本地开发调试**。
+
+### 2. 使用 Makefile (推荐)
+
+项目提供了 `Makefile`，支持多种平台的构建目标：
+
+- **默认构建**: `make` 或 `make build`
+- **构建 Linux 版本**: `make build-linux`
+- **构建 macOS 版本**: `make build-darwin` (Intel) / `make build-darwin-arm64` (Apple Silicon)
+- **构建 Windows 版本**: `make build-windows`
+- **一键构建所有常用平台**: `make build-quick` (产物在 `release/` 目录)
+
+### 3. 使用脚本构建
+
+如果你没有安装 `make`，也可以直接运行脚本：
+
+```bash
+./build_quick.sh
+```
+
+该脚本会编译 Linux (amd64), macOS (amd64/arm64), Windows (amd64) 的可执行文件并输出到 `release/` 目录。
+
+## 文件说明
+
+- **根目录下的文件** (`dubbo-invoke`, `dubbo-invoke-cli`):
+  - 通常由你在本地手动执行 `go build` 生成。
+  - 仅适用于你当前的操作系统架构（例如 macOS）。
+  - 用于开发过程中的快速验证和使用。
+
+- **release/ 目录下的文件**:
+  - 由构建脚本生成。
+  - 包含了适用于不同操作系统（Windows, Linux, macOS）的版本。
+  - 用于分发给其他用户使用。

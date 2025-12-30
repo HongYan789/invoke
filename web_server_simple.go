@@ -317,6 +317,11 @@ const simpleIndexHTML = `<!DOCTYPE html>
                 </div>
             </div>
         </div>
+        <div class="footer" style="text-align: center; margin-top: 20px; padding: 20px; color: #666; font-size: 14px;">
+            <a href="/full" style="color: #4a90e2; text-decoration: none; margin: 0 10px;">体验完整版</a>
+            <span style="color: #ccc;">|</span>
+            <a href="https://github.com/dubbo/dubbo-go" target="_blank" style="color: #666; text-decoration: none; margin: 0 10px;">Dubbo-Go</a>
+        </div>
     </div>
     
     <script>
@@ -1130,7 +1135,7 @@ const simpleIndexHTML = `<!DOCTYPE html>
                 btn.disabled = true;
             }
             
-            fetch('/api/list', {
+            fetch('/api/check-connection', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
@@ -1142,8 +1147,7 @@ const simpleIndexHTML = `<!DOCTYPE html>
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    const serviceCount = data.services ? data.services.length : 0;
-                    alert('✅ 连通性测试通过，发现 ' + serviceCount + ' 个服务');
+                    alert('✅ 连通性测试通过');
                 } else {
                     alert('❌ 连通性测试失败，网络不可达\n详细原因：' + (data.error || '未知错误'));
                 }
